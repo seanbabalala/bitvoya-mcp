@@ -1,4 +1,9 @@
 import { asNullableNumber, compactText, parseJsonField } from "../format.mjs";
+import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
+
+function toPlaceholders(count) {
+  return new Array(count).fill("?").join(", ");
+}
 
 function mapCityRow(row) {
   return {
@@ -70,6 +75,32 @@ function mapPoiRow(row) {
   };
 }
 
+function mapCitySnapshotRow(row) {
+  return {
+    source_city_id: row.source_city_id,
+    tripwiki_city_id: row.tripwiki_city_id,
+    city_name: row.city_name,
+    country_name: row.country_name,
+    country_code: row.country_code,
+    timezone: row.timezone,
+    priority_score: asNullableNumber(row.priority_score),
+    grounding_status: row.grounding_status,
+    city_positioning: compactText(row.city_positioning, 180),
+    city_character: compactText(row.city_character, 180),
+    stay_area_recommendation: compactText(row.stay_area_recommendation, 180),
+    luxury_scene_summary: compactText(row.luxury_scene_summary, 180),
+    why_agents_should_care: compactText(row.why_agents_should_care, 180),
+  };
+}
+
+function summarizeTopLabels(items, field, limit = 3) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => item?.[field])
+    .filter(Boolean)
+    .slice(0, limit)
+    .join(", ");
+}
+
 export async function searchCities(db, { query, limit }) {
   const needle = `%${String(query).trim().toLowerCase()}%`;
   const exact = String(query).trim().toLowerCase();
@@ -109,11 +140,49 @@ export async function searchCities(db, { query, limit }) {
     [needle, needle, needle, needle, exact, `%${exact}%`, `%${exact}%`, limit]
   );
 
-  return {
-    query,
-    count: rows.length,
-    results: rows.map(mapCitySearchRow),
-  };
+  const results = rows.map(mapCitySearchRow);
+  const topNames = summarizeTopLabels(results, "city_name");
+
+  return buildAgenticToolResult({
+    tool: "search_cities",
+    status: results.length > 0 ? "ok" : "not_found",
+    intent: "destination_discovery",
+    summary:
+      results.length > 0
+        ? `Found ${results.length} grounded city candidates for "${query}". Top matches: ${topNames}.`
+        : `No grounded city cards matched "${query}".`,
+    recommended_next_tools:
+      results.length > 0
+        ? [
+            buildNextTool("get_city_grounding", "Load one city's full grounding card and POIs.", [
+              "source_city_id or tripwiki_city_id or city_name",
+            ]),
+            buildNextTool("search_cities_live", "Resolve Bitvoya live city ids before hotel search.", [
+              "keyword",
+            ]),
+          ]
+        : [
+            buildNextTool("search_cities_live", "Fallback to the live city index when grounding has no direct match.", [
+              "keyword",
+            ]),
+          ],
+    selection_hints:
+      results.length > 0
+        ? [
+            "Use source_city_id for downstream Bitvoya inventory tools.",
+            "Use tripwiki_city_id when you want stable grounding identity across systems.",
+          ]
+        : [],
+    entity_refs: {
+      city_ids: results.map((row) => row.source_city_id),
+      tripwiki_city_ids: results.map((row) => row.tripwiki_city_id),
+    },
+    data: {
+      query,
+      count: results.length,
+      results,
+    },
+  });
 }
 
 async function findCityByIdentity(db, { source_city_id, tripwiki_city_id, city_name }) {
@@ -175,8 +244,71 @@ export async function getCityGrounding(db, identity, poiLimit) {
     [row.source_city_id, poiLimit]
   );
 
-  return {
-    city: mapCityRow(row),
-    top_pois: poiRows.map(mapPoiRow),
-  };
+  const city = mapCityRow(row);
+  const topPois = poiRows.map(mapPoiRow);
+
+  return buildAgenticToolResult({
+    tool: "get_city_grounding",
+    status: "ok",
+    intent: "destination_grounding",
+    summary: `Loaded grounded destination card for ${city.city_name} with ${topPois.length} high-priority POIs and planner notes.`,
+    recommended_next_tools: [
+      buildNextTool("search_hotels", "Move from grounded destination context into live hotel inventory.", [
+        "city_id or city_name",
+      ]),
+      buildNextTool("search_destination_suggestions", "Resolve mixed city/hotel phrases from user language.", [
+        "query",
+      ]),
+    ],
+    selection_hints: [
+      "Use source_city_id for hotel inventory tools.",
+      "Read stay_area_recommendation before narrowing to luxury neighborhoods.",
+    ],
+    entity_refs: {
+      city_ids: [city.source_city_id],
+      tripwiki_city_ids: [city.tripwiki_city_id],
+    },
+    data: {
+      city,
+      top_pois: topPois,
+    },
+  });
+}
+
+export async function getCityGroundingSnapshotMap(db, sourceCityIds) {
+  const ids = Array.from(
+    new Set(
+      sourceCityIds
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db.query(
+    `
+      SELECT
+        source_city_id,
+        tripwiki_city_id,
+        city_name,
+        country_name,
+        country_code,
+        timezone,
+        priority_score,
+        grounding_status,
+        city_positioning,
+        city_character,
+        stay_area_recommendation,
+        luxury_scene_summary,
+        why_agents_should_care
+      FROM vw_tripwiki_city_grounding_card
+      WHERE source_city_id IN (${toPlaceholders(ids.length)})
+    `,
+    ids
+  );
+
+  return new Map(rows.map((row) => [String(row.source_city_id), mapCitySnapshotRow(row)]));
 }
