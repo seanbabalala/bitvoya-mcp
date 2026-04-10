@@ -111,6 +111,19 @@ For local stdio integrations, point the MCP client at:
     - `BITVOYA_AGENT_KEYS_DB_*`
     - `BITVOYA_MCP_AUTH_DB_*`
     - `BITVOYA_MCP_DB_*`
+- `npm run create:handoff -- --token <raw-agent-key>`
+  - verifies the agent key, resolves the bound Bitvoya account, creates a real quote and booking intent, and prints `data.secure_handoff`
+  - writes to the configured MCP runtime store so the hosted Bitvoya handoff page can resolve the generated `intent_id`
+  - defaults to a known-good live inventory tuple, but supports overriding `hotel_id`, `room_id`, `rate_id`, stay dates, guest data, and `payment_method`
+
+Example:
+
+```bash
+npm run create:handoff -- \
+  --token <raw-agent-key> \
+  --payment-method guarantee \
+  --json
+```
 
 ## GitHub Actions
 
@@ -215,6 +228,12 @@ Exception:
   - `guarantee_state`
 - `get_booking_state` returns either a quote-state package or an intent-state package depending on the provided id
 - in `executor_handoff` mode, state responses add both `execution_boundary` and `secure_handoff` so an external agent can see whether the traveler should enter Bitvoya-hosted secure checkout or simply keep polling state
+- recommended public test loop is:
+  - run `npm run create:handoff -- --token <raw-agent-key>`
+  - open `secure_handoff.launch_url`
+  - log in with the same Bitvoya account bound to that key
+  - finish secure checkout on Bitvoya
+  - use `get_booking_state` with the returned `intent_id`
 
 ## Auth Direction
 
