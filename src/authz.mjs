@@ -181,10 +181,6 @@ const TOOL_AUTHORIZATION_POLICIES = {
     required_scopes: [MCP_SCOPE.BOOKING_STATE_READ],
     exposure: "public",
   },
-  create_card_capture_session: {
-    required_scopes: [MCP_SCOPE.CARD_CAPTURE_CREATE],
-    exposure: "public",
-  },
   attach_booking_card: {
     required_scopes: [MCP_SCOPE.BOOKING_EXECUTE],
     exposure: "internal",

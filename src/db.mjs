@@ -1,21 +1,72 @@
 import mysql from "mysql2/promise";
 
-let pool;
+const pools = new Map();
 
-export function createDb(config) {
-  if (!pool) {
-    pool = mysql.createPool({
-      host: config.db.host,
-      port: config.db.port,
-      user: config.db.user,
-      password: config.db.password,
-      database: config.db.name,
-      charset: "utf8mb4",
-      waitForConnections: true,
-      connectionLimit: 6,
-      queueLimit: 0,
-    });
+function normalizeDbConfig(configOrDbConfig, options = {}) {
+  if (!configOrDbConfig || typeof configOrDbConfig !== "object") {
+    throw new Error("Database config is required.");
   }
+
+  if ("host" in configOrDbConfig || "database" in configOrDbConfig || "name" in configOrDbConfig) {
+    return {
+      host: configOrDbConfig.host,
+      port: configOrDbConfig.port,
+      user: configOrDbConfig.user,
+      password: configOrDbConfig.password,
+      database: configOrDbConfig.database || configOrDbConfig.name,
+    };
+  }
+
+  const section = options.section || "db";
+  const dbConfig = configOrDbConfig[section];
+  if (!dbConfig) {
+    throw new Error(`Database config section '${section}' is missing.`);
+  }
+
+  return {
+    host: dbConfig.host,
+    port: dbConfig.port,
+    user: dbConfig.user,
+    password: dbConfig.password,
+    database: dbConfig.database || dbConfig.name,
+  };
+}
+
+function getPoolKey(dbConfig, options = {}) {
+  if (options.poolKey) {
+    return String(options.poolKey);
+  }
+
+  return JSON.stringify({
+    host: dbConfig.host,
+    port: dbConfig.port,
+    database: dbConfig.database,
+    user: dbConfig.user,
+  });
+}
+
+export function createDb(configOrDbConfig, options = {}) {
+  const dbConfig = normalizeDbConfig(configOrDbConfig, options);
+  const poolKey = getPoolKey(dbConfig, options);
+
+  if (!pools.has(poolKey)) {
+    pools.set(
+      poolKey,
+      mysql.createPool({
+        host: dbConfig.host,
+        port: dbConfig.port,
+        user: dbConfig.user,
+        password: dbConfig.password,
+        database: dbConfig.database,
+        charset: "utf8mb4",
+        waitForConnections: true,
+        connectionLimit: 6,
+        queueLimit: 0,
+      })
+    );
+  }
+
+  const pool = pools.get(poolKey);
 
   return {
     async query(sql, params = []) {
@@ -34,10 +85,17 @@ export function createDb(config) {
     },
 
     async close() {
-      if (pool) {
+      if (pools.has(poolKey)) {
         await pool.end();
-        pool = null;
+        pools.delete(poolKey);
       }
     },
   };
+}
+
+export async function closeAllDbPools() {
+  for (const [poolKey, pool] of pools.entries()) {
+    await pool.end();
+    pools.delete(poolKey);
+  }
 }

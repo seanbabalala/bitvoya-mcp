@@ -48,9 +48,30 @@ function enumValue(fileEnv, key, fallback, allowedValues) {
   return allowedValues.includes(raw) ? raw : fallback;
 }
 
+function resolveDbConfig(fileEnv, primaryPrefix, fallbackPrefix = "") {
+  const prefix = String(primaryPrefix || "").trim();
+  const fallback = String(fallbackPrefix || "").trim();
+  const read = (suffix, defaultValue = "") =>
+    envValue(
+      fileEnv,
+      `${prefix}_${suffix}`,
+      fallback ? envValue(fileEnv, `${fallback}_${suffix}`, defaultValue) : defaultValue
+    );
+
+  return {
+    host: read("HOST", "127.0.0.1"),
+    port: Number.parseInt(read("PORT", "3306"), 10) || 3306,
+    name: read("NAME", ""),
+    user: read("USER", ""),
+    password: read("PASSWORD", ""),
+  };
+}
+
 export function loadConfig() {
   const envPath = process.env.BITVOYA_MCP_ENV_PATH || DEFAULT_ENV_PATH;
   const fileEnv = loadEnvFile(envPath);
+  const primaryDb = resolveDbConfig(fileEnv, "BITVOYA_MCP_DB");
+  const authDb = resolveDbConfig(fileEnv, "BITVOYA_MCP_AUTH_DB", "BITVOYA_MCP_DB");
 
   const config = {
     envPath,
@@ -59,13 +80,8 @@ export function loadConfig() {
       version: envValue(fileEnv, "BITVOYA_MCP_SERVER_VERSION", "0.2.0"),
       transport: envValue(fileEnv, "BITVOYA_MCP_TRANSPORT", "stdio"),
     },
-    db: {
-      host: envValue(fileEnv, "BITVOYA_MCP_DB_HOST", "127.0.0.1"),
-      port: intValue(fileEnv, "BITVOYA_MCP_DB_PORT", 3306),
-      name: envValue(fileEnv, "BITVOYA_MCP_DB_NAME", "tripwiki_publish"),
-      user: envValue(fileEnv, "BITVOYA_MCP_DB_USER", ""),
-      password: envValue(fileEnv, "BITVOYA_MCP_DB_PASSWORD", ""),
-    },
+    db: primaryDb,
+    authDb,
     api: {
       baseUrl: envValue(fileEnv, "BITVOYA_API_BASE_URL", "https://app.bitvoya.com/api"),
       timeoutMs: intValue(fileEnv, "BITVOYA_API_TIMEOUT_MS", 30000),
@@ -122,6 +138,10 @@ export function loadConfig() {
     throw new Error(`Missing MCP database credentials in ${envPath}`);
   }
 
+  if (!config.authDb.name || !config.authDb.user || !config.authDb.password) {
+    throw new Error(`Missing MCP auth database credentials in ${envPath}`);
+  }
+
   return config;
 }
 
@@ -135,6 +155,13 @@ export function summarizeConfig(config) {
       name: config.db.name,
       user: config.db.user,
       passwordConfigured: Boolean(config.db.password),
+    },
+    authDb: {
+      host: config.authDb.host,
+      port: config.authDb.port,
+      name: config.authDb.name,
+      user: config.authDb.user,
+      passwordConfigured: Boolean(config.authDb.password),
     },
     api: {
       baseUrl: config.api.baseUrl,

@@ -22,12 +22,21 @@ Runtime credentials are loaded from:
 
 See [CONFIGURATION.md](/root/bitvoya_mcp/CONFIGURATION.md) for the expected keys.
 
+Database split:
+
+- `BITVOYA_MCP_DB_*`
+  - `tripwiki_publish` grounding / enrichment data
+- `BITVOYA_MCP_AUTH_DB_*`
+  - Bitvoya account / auth data such as `mcp_agent_tokens`
+
 Default booking mode is `executor_handoff`.
 
 - public/default MCP exposure ends at:
   - `prepare_booking_quote`
   - `create_booking_intent`
   - `get_booking_state`
+- secure checkout launch is currently surfaced through `data.secure_handoff`
+  - there is no standalone public card-capture tool exposed yet
 - internal-only booking execution tools are exposed only when:
   - `BITVOYA_MCP_BOOKING_EXECUTION_MODE=internal_execution`
 

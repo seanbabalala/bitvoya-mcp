@@ -17,6 +17,11 @@ BITVOYA_MCP_DB_PORT=3306
 BITVOYA_MCP_DB_NAME=tripwiki_publish
 BITVOYA_MCP_DB_USER=tripwiki_publish
 BITVOYA_MCP_DB_PASSWORD=replace-me
+BITVOYA_MCP_AUTH_DB_HOST=127.0.0.1
+BITVOYA_MCP_AUTH_DB_PORT=3306
+BITVOYA_MCP_AUTH_DB_NAME=app_bitvoya
+BITVOYA_MCP_AUTH_DB_USER=app_bitvoya
+BITVOYA_MCP_AUTH_DB_PASSWORD=replace-me
 BITVOYA_API_BASE_URL=https://app.bitvoya.com/api
 BITVOYA_API_TIMEOUT_MS=30000
 BITVOYA_API_BEARER_TOKEN=
@@ -51,7 +56,9 @@ BITVOYA_MCP_REMOTE_REQUIRED_SCOPES=inventory.read,grounding.read
 
 - live product data is pulled from the existing Bitvoya API base URL
 - `BITVOYA_API_BEARER_TOKEN` is optional today, but the hook is ready if protected upstream endpoints are added later
-- `tripwiki_publish` remains read-only and is used only for grounding / enrichment
+- `BITVOYA_MCP_DB_*` should point at `tripwiki_publish` and remain read-only for grounding / enrichment
+- `BITVOYA_MCP_AUTH_DB_*` should point at the Bitvoya account/auth database that owns `mcp_agent_tokens`
+- if `BITVOYA_MCP_AUTH_DB_*` is omitted, the runtime falls back to `BITVOYA_MCP_DB_*`, but production should keep the auth DB separate
 - `BITVOYA_MCP_REMOTE_*` values are scaffolding for future remote transport or gateway deployment
 - `BITVOYA_MCP_BOOKING_EXECUTION_MODE` defaults to `executor_handoff`
 - `executor_handoff` exposes only `prepare_booking_quote`, `create_booking_intent`, and `get_booking_state`
