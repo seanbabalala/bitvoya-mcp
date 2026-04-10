@@ -183,6 +183,9 @@ Recommended claims:
 - `amount_due_now_cny`
 - `amount_due_at_hotel_cny`
 - `requires_card_attachment`
+- `user_id`
+- `account_id`
+- `email`
 - `iat`
 - `exp`
 - nonce

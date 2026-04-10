@@ -34,6 +34,40 @@ function toIsoFromUnix(unixSeconds) {
   return new Date(unixSeconds * 1000).toISOString();
 }
 
+function asNonEmptyString(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function buildSignedUserBinding(intentSummary) {
+  const userInfo =
+    intentSummary?.user_info && typeof intentSummary.user_info === "object"
+      ? intentSummary.user_info
+      : {};
+
+  const userId = asNonEmptyString(
+    userInfo.user_id ?? userInfo.id ?? userInfo.userId ?? null
+  );
+  const accountId = asNonEmptyString(
+    userInfo.account_id ??
+      userInfo.accountId ??
+      userInfo.user_uuid ??
+      userInfo.uuid ??
+      userId
+  );
+  const email = asNonEmptyString(userInfo.email ?? null);
+
+  return {
+    ...(userId ? { user_id: userId } : {}),
+    ...(accountId ? { account_id: accountId } : {}),
+    ...(email ? { email } : {}),
+  };
+}
+
 function buildSignedLaunchUrl(claims, handoffConfig = {}) {
   const mode = normalizeHandoffMode(handoffConfig.mode);
 
@@ -279,6 +313,7 @@ export function buildIntentSecureHandoff(intentSummary, options = {}) {
             amount_due_at_hotel_cny: intentSummary?.amount_due_at_hotel_cny ?? null,
             requires_card_attachment: Boolean(intentSummary?.requires_card_attachment),
             intent_status: intentSummary?.status || null,
+            ...buildSignedUserBinding(intentSummary),
           },
           options?.config?.handoff
         );

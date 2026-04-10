@@ -664,6 +664,7 @@ function buildIntentSummary(intent, options = {}) {
     backend_order: normalizedIntent.backend_order,
     payment_session: normalizedIntent.payment_session,
     live_booking_details: normalizedIntent.live_booking_details,
+    user_info: normalizedIntent.user_info || null,
     quote_snapshot: normalizedIntent.quote_snapshot,
     guest_snapshot: normalizedIntent.guest_snapshot,
     legacy_submit_preview: normalizedIntent.legacy_submit_preview,
