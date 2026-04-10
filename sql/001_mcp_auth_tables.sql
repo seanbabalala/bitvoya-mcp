@@ -1,0 +1,93 @@
+-- Bitvoya MCP auth / executor scaffolding
+-- Notes:
+-- 1. Keep website users/accounts as the source of truth.
+-- 2. Bind MCP tokens to the same user/account identifiers used by the main Bitvoya site.
+-- 3. Store only token hashes, never the raw token secret.
+
+CREATE TABLE IF NOT EXISTS mcp_agent_tokens (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token_id VARCHAR(96) NOT NULL,
+  token_prefix VARCHAR(24) NOT NULL,
+  account_id VARCHAR(64) NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  token_name VARCHAR(120) NOT NULL,
+  token_type ENUM('personal_api_key', 'agent_api_key', 'internal_service_token') NOT NULL DEFAULT 'agent_api_key',
+  actor_type ENUM('human_user', 'partner_agent', 'bitvoya_managed_agent', 'internal_service') NOT NULL DEFAULT 'partner_agent',
+  token_hash CHAR(64) NOT NULL,
+  scopes_json JSON NOT NULL,
+  status ENUM('active', 'revoked', 'expired') NOT NULL DEFAULT 'active',
+  environment_label VARCHAR(32) DEFAULT NULL,
+  expires_at DATETIME DEFAULT NULL,
+  revoked_at DATETIME DEFAULT NULL,
+  last_used_at DATETIME DEFAULT NULL,
+  created_by_ip VARCHAR(64) DEFAULT NULL,
+  last_used_ip VARCHAR(64) DEFAULT NULL,
+  revoked_reason VARCHAR(255) DEFAULT NULL,
+  metadata_json JSON DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_mcp_agent_tokens_token_id (token_id),
+  UNIQUE KEY uk_mcp_agent_tokens_token_hash (token_hash),
+  KEY idx_mcp_agent_tokens_account_status (account_id, status),
+  KEY idx_mcp_agent_tokens_user_status (user_id, status),
+  KEY idx_mcp_agent_tokens_expires_at (expires_at),
+  KEY idx_mcp_agent_tokens_last_used_at (last_used_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS mcp_auth_audit_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  event_id VARCHAR(96) NOT NULL,
+  token_id VARCHAR(96) DEFAULT NULL,
+  account_id VARCHAR(64) DEFAULT NULL,
+  user_id VARCHAR(64) DEFAULT NULL,
+  actor_type VARCHAR(48) DEFAULT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  tool_name VARCHAR(96) DEFAULT NULL,
+  request_id VARCHAR(96) DEFAULT NULL,
+  status VARCHAR(32) NOT NULL,
+  reason_code VARCHAR(64) DEFAULT NULL,
+  ip_address VARCHAR(64) DEFAULT NULL,
+  user_agent VARCHAR(255) DEFAULT NULL,
+  scopes_json JSON DEFAULT NULL,
+  request_context_json JSON DEFAULT NULL,
+  result_context_json JSON DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_mcp_auth_audit_events_event_id (event_id),
+  KEY idx_mcp_auth_audit_events_token_id (token_id),
+  KEY idx_mcp_auth_audit_events_account_id (account_id),
+  KEY idx_mcp_auth_audit_events_user_id (user_id),
+  KEY idx_mcp_auth_audit_events_event_type (event_type),
+  KEY idx_mcp_auth_audit_events_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS mcp_executor_handoff_jobs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  handoff_job_id VARCHAR(96) NOT NULL,
+  intent_id VARCHAR(96) NOT NULL,
+  account_id VARCHAR(64) NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  requested_by_token_id VARCHAR(96) DEFAULT NULL,
+  job_type ENUM('card_capture', 'submit_booking', 'create_payment_session', 'refresh_booking_state') NOT NULL,
+  status ENUM('queued', 'running', 'succeeded', 'failed', 'cancelled') NOT NULL DEFAULT 'queued',
+  priority SMALLINT NOT NULL DEFAULT 100,
+  idempotency_key VARCHAR(128) DEFAULT NULL,
+  input_json JSON NOT NULL,
+  result_json JSON DEFAULT NULL,
+  error_code VARCHAR(64) DEFAULT NULL,
+  error_message VARCHAR(255) DEFAULT NULL,
+  requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  started_at DATETIME DEFAULT NULL,
+  finished_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_mcp_executor_handoff_jobs_job_id (handoff_job_id),
+  UNIQUE KEY uk_mcp_executor_handoff_jobs_idempotency_key (idempotency_key),
+  KEY idx_mcp_executor_handoff_jobs_intent_id (intent_id),
+  KEY idx_mcp_executor_handoff_jobs_account_id (account_id),
+  KEY idx_mcp_executor_handoff_jobs_user_id (user_id),
+  KEY idx_mcp_executor_handoff_jobs_status (status),
+  KEY idx_mcp_executor_handoff_jobs_requested_at (requested_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

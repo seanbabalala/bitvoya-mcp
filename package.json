@@ -1,12 +1,17 @@
 {
   "name": "bitvoya-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Read-only MCP server for Bitvoya grounding data and luxury hotel intelligence.",
+  "description": "API-first MCP server for Bitvoya luxury hotel discovery with tripwiki grounding augmentation.",
   "scripts": {
     "start": "node ./src/server.mjs",
-    "dev": "node --watch ./src/server.mjs"
+    "dev": "node --watch ./src/server.mjs",
+    "check:syntax": "node --check ./src/server.mjs && node --check ./src/auth.mjs && node --check ./src/authz.mjs && node --check ./src/remote-auth.mjs && node --check ./src/token-auth.mjs && node --check ./src/handoff.mjs && node --check ./src/tools/cities.mjs && node --check ./src/tools/content.mjs && node --check ./src/tools/hotels.mjs && node --check ./src/tools/booking.mjs && node --check ./scripts/smoke-discovery.mjs && node --check ./scripts/smoke-booking.mjs && node --check ./scripts/smoke-all.mjs && node --check ./scripts/verify-agent-key.mjs",
+    "smoke:discovery": "node ./scripts/smoke-discovery.mjs",
+    "smoke:booking": "node ./scripts/smoke-booking.mjs",
+    "smoke:all": "node ./scripts/smoke-all.mjs",
+    "verify:agent-key": "node ./scripts/verify-agent-key.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
