@@ -155,46 +155,104 @@ function mapHotelSnapshotRow(row) {
     currency: row.currency,
     grounding_status: row.grounding_status,
     why_stay_here: compactText(row.why_stay_here, 220),
+    why_not_stay_here: compactText(row.why_not_stay_here, 180),
     hotel_luxury_fit_reason: compactText(row.hotel_luxury_fit_reason, 180),
+    hotel_family_fit_reason: compactText(row.hotel_family_fit_reason, 160),
+    hotel_couple_fit_reason: compactText(row.hotel_couple_fit_reason, 160),
+    hotel_business_fit_reason: compactText(row.hotel_business_fit_reason, 160),
+    hotel_short_stay_fit_reason: compactText(row.hotel_short_stay_fit_reason, 160),
+    hotel_long_stay_fit_reason: compactText(row.hotel_long_stay_fit_reason, 160),
     hotel_area_character: compactText(row.hotel_area_character, 180),
     hotel_transport_summary: compactText(row.hotel_transport_summary, 180),
+    hotel_airport_access_summary: compactText(row.hotel_airport_access_summary, 160),
+    hotel_rail_access_summary: compactText(row.hotel_rail_access_summary, 160),
+    hotel_metro_access_summary: compactText(row.hotel_metro_access_summary, 160),
+    hotel_walkability_summary: compactText(row.hotel_walkability_summary, 160),
+    hotel_shopping_access_summary: compactText(row.hotel_shopping_access_summary, 160),
+    hotel_attraction_access_summary: compactText(row.hotel_attraction_access_summary, 160),
+    hotel_food_access_summary: compactText(row.hotel_food_access_summary, 160),
+    hotel_nightlife_access_summary: compactText(row.hotel_nightlife_access_summary, 160),
+    hotel_risk_notes: compactText(row.hotel_risk_notes, 180),
+    hotel_tradeoff_notes: compactText(row.hotel_tradeoff_notes, 180),
+    agent_planning_notes: compactText(row.agent_planning_notes, 180),
+    planner_summary: parseJsonField(row.planner_summary_json, {}),
+    access_overview: parseJsonField(row.access_overview_json, {}),
+    neighborhood_overview: parseJsonField(row.neighborhood_overview_json, {}),
+    traveler_fit: parseJsonField(row.traveler_fit_json, {}),
+    missing_dimensions: parseJsonField(row.missing_dimensions_json, []),
   };
 }
 
-function cityMatchesQuery(city, query) {
+function scoreCityMatch(city, query) {
   const normalizedQuery = normalizeSearchText(query);
-  if (!normalizedQuery) return false;
+  if (!normalizedQuery) return null;
 
   const candidates = [
     city?.name,
     city?.nameEn,
+    city?.displayName,
     city?.pathName,
     city?.pathNameEn,
+    city?.pathNameEnglish,
   ]
     .map((value) => normalizeSearchText(value))
     .filter(Boolean);
 
-  return candidates.some(
-    (value) =>
-      value === normalizedQuery ||
-      value.includes(normalizedQuery) ||
-      normalizedQuery.includes(value)
-  );
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const field of candidates) {
+    if (field === normalizedQuery) {
+      bestScore = Math.min(bestScore, 0);
+      continue;
+    }
+
+    if (field.startsWith(normalizedQuery)) {
+      bestScore = Math.min(bestScore, 1);
+      continue;
+    }
+
+    if (field.includes(normalizedQuery)) {
+      bestScore = Math.min(bestScore, 2);
+    }
+  }
+
+  return Number.isFinite(bestScore) ? bestScore : null;
 }
 
-function scoreHotelMatch(hotel, query) {
+function cityMatchesQuery(city, query) {
+  return scoreCityMatch(city, query) !== null;
+}
+
+function selectBestCityCandidate(cities, query) {
+  const scored = asArray(cities)
+    .map((city) => ({ city, score: scoreCityMatch(city, query) }))
+    .filter((item) => item.score !== null);
+
+  if (scored.length === 0) {
+    return asArray(cities)[0] || null;
+  }
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    const hotelCountA = asNullableNumber(a.city?.hotelCount) || 0;
+    const hotelCountB = asNullableNumber(b.city?.hotelCount) || 0;
+    if (hotelCountA !== hotelCountB) return hotelCountB - hotelCountA;
+    return String(a.city?.name || "").localeCompare(String(b.city?.name || ""));
+  });
+
+  return scored[0]?.city || null;
+}
+
+function scoreHotelIdentityMatch(hotel, query) {
   const normalizedQuery = normalizeSearchText(query);
-  if (!normalizedQuery) return 0;
+  if (!normalizedQuery) return null;
 
   const fields = [
     hotel?.name,
     hotel?.nameEn,
-    hotel?.address,
-    hotel?.addressEn,
+    hotel?.displayName,
     hotel?.profiles?.BRAND?.name,
     hotel?.profiles?.BRAND?.nameEn,
-    hotel?.profiles?.CITY?.name,
-    hotel?.profiles?.CITY?.nameEn,
   ]
     .map((value) => normalizeSearchText(value))
     .filter(Boolean);
@@ -224,7 +282,7 @@ function filterHotelsByQuery(hotels, query) {
   const scored = [];
 
   for (const hotel of asArray(hotels)) {
-    const score = scoreHotelMatch(hotel, query);
+    const score = scoreHotelIdentityMatch(hotel, query);
     if (score === null) continue;
     scored.push({ hotel, score });
   }
@@ -239,6 +297,231 @@ function filterHotelsByQuery(hotels, query) {
     .map((item) => item.hotel);
 }
 
+function normalizeResolvedCityCandidate(city) {
+  if (!city) return null;
+
+  return {
+    id: normalizeId(city?.id || city?.cityId),
+    name: firstNonEmpty(city?.name, city?.displayName),
+    nameEn: firstNonEmpty(city?.nameEn),
+  };
+}
+
+function buildSearchMatchDescriptor(score, scope) {
+  if (score === null || score === undefined) {
+    return null;
+  }
+
+  const mapping =
+    score === 0
+      ? { match_type: "exact", relevance_score: 100 }
+      : score === 1
+        ? { match_type: "prefix", relevance_score: 88 }
+        : { match_type: "contains", relevance_score: 72 };
+
+  const noteByScope = {
+    city: {
+      exact: "Exact city identity match.",
+      prefix: "Strong prefix match against a live city candidate.",
+      contains: "Partial city-name match.",
+    },
+    hotel: {
+      exact: "Exact hotel or brand match.",
+      prefix: "Strong prefix match against hotel or brand identity.",
+      contains: "Partial hotel or brand match.",
+    },
+    explicit_city: {
+      exact: "Explicit city input provided by the caller.",
+      prefix: "Explicit city input provided by the caller.",
+      contains: "Explicit city input provided by the caller.",
+    },
+  };
+
+  return {
+    ...mapping,
+    note: noteByScope[scope]?.[mapping.match_type] || "Search match detected.",
+  };
+}
+
+function sortMatchRows(rows, tiebreaker) {
+  return [...asArray(rows)].sort((a, b) => {
+    const scoreA = a?.match?.relevance_score ?? 0;
+    const scoreB = b?.match?.relevance_score ?? 0;
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    return tiebreaker(a, b);
+  });
+}
+
+async function buildCityCandidateRows(db, rawCities, query, limit = 5) {
+  const uniqueCities = uniqueBy(
+    asArray(rawCities)
+      .map((city) => ({
+        ...city,
+        cityId: normalizeId(city?.cityId || city?.id),
+      }))
+      .filter((city) => city.cityId),
+    (city) => city.cityId
+  );
+  const groundingMap = await getCityGroundingSnapshotMap(
+    db,
+    uniqueCities.map((city) => city.cityId)
+  );
+
+  const rows = uniqueCities.map((city) => {
+    const grounding = groundingMap.get(city.cityId) || null;
+    return {
+      city_id: city.cityId,
+      city_name: firstNonEmpty(city?.name, city?.displayName, grounding?.city_name),
+      city_name_en: firstNonEmpty(city?.nameEn),
+      code: firstNonEmpty(city?.code),
+      hotel_count: asNullableNumber(city?.hotelCount),
+      display_name: firstNonEmpty(city?.displayName, city?.nameEn, city?.name),
+      match: buildSearchMatchDescriptor(scoreCityMatch(city, query), "city"),
+      grounding_excerpt: buildCityGroundingExcerpt(grounding),
+    };
+  });
+
+  return sortMatchRows(
+    rows,
+    (a, b) =>
+      (b?.hotel_count ?? 0) - (a?.hotel_count ?? 0) ||
+      String(a?.city_name || "").localeCompare(String(b?.city_name || ""))
+  ).slice(0, limit);
+}
+
+function buildExplicitCityCandidateRow(resolvedCity, grounding = null) {
+  return {
+    city_id: normalizeId(resolvedCity?.id),
+    city_name: firstNonEmpty(resolvedCity?.name, grounding?.city_name),
+    city_name_en: firstNonEmpty(resolvedCity?.nameEn),
+    code: null,
+    hotel_count: null,
+    display_name: firstNonEmpty(resolvedCity?.nameEn, resolvedCity?.name),
+    match: buildSearchMatchDescriptor(0, "explicit_city"),
+    grounding_excerpt: buildCityGroundingExcerpt(grounding),
+  };
+}
+
+function buildHotelCandidateSeedRows(rawHotels, query, limit = 5) {
+  const rows = uniqueBy(asArray(rawHotels), (hotel) => normalizeId(hotel?.id))
+    .map((hotel) => ({
+      hotel,
+      hotel_id: normalizeId(hotel?.id),
+      hotel_name: firstNonEmpty(hotel?.name),
+      hotel_name_en: firstNonEmpty(hotel?.nameEn),
+      match: buildSearchMatchDescriptor(scoreHotelIdentityMatch(hotel, query), "hotel"),
+      sales: asNullableNumber(hotel?.sales),
+    }))
+    .filter((row) => row.hotel_id && row.match);
+
+  return sortMatchRows(
+    rows,
+    (a, b) =>
+      (b?.sales ?? 0) - (a?.sales ?? 0) ||
+      String(a?.hotel_name_en || a?.hotel_name || "").localeCompare(String(b?.hotel_name_en || b?.hotel_name || ""))
+  ).slice(0, limit);
+}
+
+function resolveSearchRoute({ source, cityCandidates = [], hotelCandidates = [] }) {
+  if (source === "city_id" || source === "city_name") {
+    return {
+      detected_intent: "destination",
+      recommended_route: "city_inventory",
+      confidence: "high",
+      reason: "Explicit city input was provided, so destination inventory is the primary route.",
+    };
+  }
+
+  const topCity = cityCandidates[0] || null;
+  const topHotel = hotelCandidates[0] || null;
+  const cityScore = topCity?.match?.relevance_score ?? 0;
+  const hotelScore = topHotel?.match?.relevance_score ?? 0;
+
+  if (topCity && topHotel) {
+    if (cityScore >= 88 && hotelScore >= 88 && Math.abs(cityScore - hotelScore) <= 12) {
+      return {
+        detected_intent: "ambiguous",
+        recommended_route: "ambiguous_review",
+        confidence: "medium",
+        reason: "The query strongly matched both a destination and specific hotel identities.",
+      };
+    }
+
+    if (cityScore > hotelScore) {
+      return {
+        detected_intent: "destination",
+        recommended_route: "city_inventory",
+        confidence: cityScore >= 88 ? "high" : "medium",
+        reason: `Destination signals are stronger than hotel-identity signals for "${topCity.city_name}".`,
+      };
+    }
+
+    return {
+      detected_intent: "hotel",
+      recommended_route: "direct_hotel",
+      confidence: hotelScore >= 88 ? "high" : "medium",
+      reason: `Hotel-identity signals are stronger than destination signals for "${topHotel.hotel_name}".`,
+    };
+  }
+
+  if (topCity) {
+    return {
+      detected_intent: "destination",
+      recommended_route: "city_inventory",
+      confidence: cityScore >= 88 ? "high" : "medium",
+      reason: `The query resolved most clearly to destination "${topCity.city_name}".`,
+    };
+  }
+
+  if (topHotel) {
+    return {
+      detected_intent: "hotel",
+      recommended_route: "direct_hotel",
+      confidence: hotelScore >= 88 ? "high" : "medium",
+      reason: `The query resolved most clearly to hotel "${topHotel.hotel_name}".`,
+    };
+  }
+
+  return {
+    detected_intent: "unknown",
+    recommended_route: "no_match",
+    confidence: "low",
+    reason: "No strong live city or hotel candidate was resolved from the query.",
+  };
+}
+
+function shouldExpandCityInventory({ source, routeDecision, topCityCandidate }) {
+  if (source === "city_id" || source === "city_name") {
+    return Boolean(topCityCandidate);
+  }
+
+  if (!topCityCandidate) {
+    return false;
+  }
+
+  if (routeDecision?.recommended_route === "city_inventory" || routeDecision?.recommended_route === "ambiguous_review") {
+    return true;
+  }
+
+  return (topCityCandidate?.match?.relevance_score ?? 0) >= 88;
+}
+
+function shouldExpandDirectHotels({ source, routeDecision, topHotelCandidate }) {
+  if (source !== "query") {
+    return false;
+  }
+
+  if (!topHotelCandidate) {
+    return false;
+  }
+
+  if (routeDecision?.recommended_route === "direct_hotel" || routeDecision?.recommended_route === "ambiguous_review") {
+    return true;
+  }
+
+  return (topHotelCandidate?.match?.relevance_score ?? 0) >= 88;
+}
+
 function buildGroundingExcerpt(grounding) {
   if (!grounding) return null;
 
@@ -247,9 +530,16 @@ function buildGroundingExcerpt(grounding) {
     tripwiki_hotel_id: grounding.tripwiki_hotel_id,
     grounding_status: grounding.grounding_status,
     why_stay_here: grounding.why_stay_here,
+    why_not_stay_here: grounding.why_not_stay_here,
     luxury_fit: grounding.hotel_luxury_fit_reason,
     area_character: grounding.hotel_area_character,
     transport_summary: grounding.hotel_transport_summary,
+    traveler_fit_highlights: buildTravelerFitHighlights(grounding),
+    access_highlights: buildAccessHighlights(grounding),
+    planner_highlights: buildPlannerHighlights(grounding),
+    risk_notes: uniqueTexts([grounding.hotel_risk_notes], 2),
+    tradeoff_notes: uniqueTexts([grounding.hotel_tradeoff_notes], 2),
+    missing_dimensions: collectStructuredHighlights(grounding.missing_dimensions, 3, 120),
   };
 }
 
@@ -264,6 +554,134 @@ function buildCityGroundingExcerpt(cityGrounding) {
     city_character: cityGrounding.city_character,
     luxury_scene_summary: cityGrounding.luxury_scene_summary,
     stay_area_recommendation: cityGrounding.stay_area_recommendation,
+    why_agents_should_care: cityGrounding.why_agents_should_care,
+  };
+}
+
+function collectStructuredHighlights(value, limit = 4, textLimit = 160, depth = 0, bucket = [], seen = new Set()) {
+  if (bucket.length >= limit || value === null || value === undefined || depth > 2) {
+    return bucket;
+  }
+
+  if (typeof value === "string") {
+    const normalized = compactText(value, textLimit);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      bucket.push(normalized);
+    }
+    return bucket;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStructuredHighlights(item, limit, textLimit, depth + 1, bucket, seen);
+      if (bucket.length >= limit) break;
+    }
+    return bucket;
+  }
+
+  if (typeof value !== "object") {
+    return bucket;
+  }
+
+  const preferredKeys = [
+    "summary",
+    "overview",
+    "recommendation",
+    "reason",
+    "note",
+    "description",
+    "text",
+    "title",
+    "label",
+    "headline",
+    "insight",
+    "best_for",
+  ];
+
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      collectStructuredHighlights(value[key], limit, textLimit, depth + 1, bucket, seen);
+      if (bucket.length >= limit) return bucket;
+    }
+  }
+
+  for (const nested of Object.values(value)) {
+    collectStructuredHighlights(nested, limit, textLimit, depth + 1, bucket, seen);
+    if (bucket.length >= limit) break;
+  }
+
+  return bucket;
+}
+
+function buildTravelerFitHighlights(grounding) {
+  return uniqueTexts(
+    [
+      grounding?.hotel_luxury_fit_reason,
+      grounding?.hotel_family_fit_reason,
+      grounding?.hotel_couple_fit_reason,
+      grounding?.hotel_business_fit_reason,
+      grounding?.hotel_short_stay_fit_reason,
+      grounding?.hotel_long_stay_fit_reason,
+      ...collectStructuredHighlights(grounding?.traveler_fit, 2, 140),
+    ],
+    4
+  );
+}
+
+function buildAccessHighlights(grounding) {
+  return uniqueTexts(
+    [
+      grounding?.hotel_transport_summary,
+      grounding?.hotel_airport_access_summary,
+      grounding?.hotel_rail_access_summary,
+      grounding?.hotel_metro_access_summary,
+      grounding?.hotel_walkability_summary,
+      grounding?.hotel_shopping_access_summary,
+      grounding?.hotel_attraction_access_summary,
+      grounding?.hotel_food_access_summary,
+      grounding?.hotel_nightlife_access_summary,
+      ...collectStructuredHighlights(grounding?.access_overview, 2, 140),
+    ],
+    4
+  );
+}
+
+function buildPlannerHighlights(grounding) {
+  return uniqueTexts(
+    [
+      grounding?.why_stay_here,
+      grounding?.agent_planning_notes,
+      ...collectStructuredHighlights(grounding?.planner_summary, 2, 150),
+      ...collectStructuredHighlights(grounding?.neighborhood_overview, 2, 150),
+    ],
+    4
+  );
+}
+
+function buildHotelStaticStory(hotel, grounding, cityGrounding) {
+  return {
+    positioning: compactText(
+      firstNonEmpty(grounding?.why_stay_here, hotel?.shortPoint, hotel?.buildInfo, cityGrounding?.luxury_scene_summary),
+      220
+    ),
+    why_not_stay_here: compactText(grounding?.why_not_stay_here, 180),
+    traveler_fit_highlights: buildTravelerFitHighlights(grounding),
+    access_highlights: buildAccessHighlights(grounding),
+    planner_highlights: buildPlannerHighlights(grounding),
+    risk_notes: uniqueTexts([grounding?.hotel_risk_notes], 2),
+    tradeoff_notes: uniqueTexts([grounding?.hotel_tradeoff_notes], 2),
+    agent_notes: uniqueTexts([grounding?.agent_planning_notes], 2),
+    city_context: uniqueTexts(
+      [
+        cityGrounding?.city_positioning,
+        cityGrounding?.city_character,
+        cityGrounding?.stay_area_recommendation,
+        cityGrounding?.why_agents_should_care,
+      ],
+      3
+    ),
+    missing_dimensions: collectStructuredHighlights(grounding?.missing_dimensions, 3, 120),
   };
 }
 
@@ -337,6 +755,7 @@ function normalizeHotelSummary(
       build_info: compactText(hotel?.buildInfo, 180),
       short_point: compactText(hotel?.shortPoint, 180),
     },
+    static_story: buildHotelStaticStory(hotel, grounding, cityGrounding),
     membership_benefits: {
       has_member_benefits: interests.length > 0 || promotions.length > 0,
       interest_count: interests.length,
@@ -998,6 +1417,9 @@ function buildRatePriorityReason(entry, topDimension, preferences = null) {
 function buildHotelTradeoffs(hotel, liveRateSummary = null) {
   const tradeoffs = [];
 
+  tradeoffs.push(...asArray(hotel?.static_story?.tradeoff_notes).slice(0, 2));
+  tradeoffs.push(...asArray(hotel?.static_story?.risk_notes).slice(0, 1));
+
   if (!hotel?.membership_benefits?.has_member_benefits) {
     tradeoffs.push("No explicit member-benefit package is attached in current detail data.");
   }
@@ -1010,11 +1432,15 @@ function buildHotelTradeoffs(hotel, liveRateSummary = null) {
     tradeoffs.push("No current price signal is available for quick commercial comparison.");
   }
 
-  return tradeoffs;
+  return uniqueTexts(tradeoffs, 4);
 }
 
 function buildHotelStrengths(hotel, liveRateSummary = null) {
   const strengths = [];
+
+  if (hotel?.static_story?.positioning) {
+    strengths.push(hotel.static_story.positioning);
+  }
 
   if (hotel?.grounding_excerpt?.luxury_fit) {
     strengths.push(hotel.grounding_excerpt.luxury_fit);
@@ -1036,7 +1462,10 @@ function buildHotelStrengths(hotel, liveRateSummary = null) {
     strengths.push(hotel.grounding_excerpt.transport_summary);
   }
 
-  return strengths.slice(0, 4);
+  strengths.push(...asArray(hotel?.static_story?.traveler_fit_highlights).slice(0, 2));
+  strengths.push(...asArray(hotel?.static_story?.access_highlights).slice(0, 1));
+
+  return uniqueTexts(strengths, 4);
 }
 
 function buildHotelDecisionBrief(hotel, liveRateSummary = null, scoreBreakdown = null) {
@@ -1410,9 +1839,31 @@ export async function getHotelGroundingSnapshotMap(db, sourceHotelIds) {
         currency,
         grounding_status,
         why_stay_here,
+        why_not_stay_here,
         hotel_luxury_fit_reason,
+        hotel_family_fit_reason,
+        hotel_couple_fit_reason,
+        hotel_business_fit_reason,
+        hotel_short_stay_fit_reason,
+        hotel_long_stay_fit_reason,
         hotel_area_character,
-        hotel_transport_summary
+        hotel_transport_summary,
+        hotel_airport_access_summary,
+        hotel_rail_access_summary,
+        hotel_metro_access_summary,
+        hotel_walkability_summary,
+        hotel_shopping_access_summary,
+        hotel_attraction_access_summary,
+        hotel_food_access_summary,
+        hotel_nightlife_access_summary,
+        hotel_risk_notes,
+        hotel_tradeoff_notes,
+        agent_planning_notes,
+        planner_summary_json,
+        access_overview_json,
+        neighborhood_overview_json,
+        traveler_fit_json,
+        missing_dimensions_json
       FROM vw_tripwiki_hotel_grounding_card
       WHERE source_hotel_id IN (${toPlaceholders(ids.length)})
     `,
@@ -1448,7 +1899,7 @@ async function buildHotelSummaryBatch(db, hotels, { priceMap = new Map(), stayCo
 }
 
 async function loadPriceMap(api, hotelIds, stayContext) {
-  if (!stayContext) {
+  if (!stayContext || asArray(hotelIds).length === 0) {
     return new Map();
   }
 
@@ -1524,6 +1975,273 @@ function buildSearchPricingNotice(stayContext) {
     stage: "search",
     search_price_field: "supplier_min_price_cny",
     note: "Search-stage min prices come from /hotels/prices and do not include the service-fee-adjusted display total used at checkout.",
+  };
+}
+
+function buildSearchQueryMatch(hotel, query) {
+  return buildSearchMatchDescriptor(scoreHotelIdentityMatch(hotel, query), "hotel");
+}
+
+function buildSearchShortlistGuide(ranked) {
+  const topPick = ranked[0] || null;
+  const bestValue =
+    [...ranked]
+      .filter((item) => Number.isFinite(item.hotel?.search_price?.supplier_min_price_cny))
+      .sort(
+        (a, b) =>
+          (a.hotel?.search_price?.supplier_min_price_cny ?? Number.POSITIVE_INFINITY) -
+          (b.hotel?.search_price?.supplier_min_price_cny ?? Number.POSITIVE_INFINITY)
+      )[0] || null;
+  const strongestBenefits =
+    [...ranked].sort(
+      (a, b) =>
+        ((b.hotel?.membership_benefits?.interest_count || 0) + (b.hotel?.membership_benefits?.promotion_count || 0)) -
+        ((a.hotel?.membership_benefits?.interest_count || 0) + (a.hotel?.membership_benefits?.promotion_count || 0))
+    )[0] || null;
+  const strongestStaticStory = ranked.find((item) => item.hotel?.static_story?.positioning) || null;
+  const strongestLocationStory = ranked.find(
+    (item) => (item.hotel?.static_story?.access_highlights || []).length > 0
+  ) || null;
+
+  return {
+    top_pick: topPick
+      ? {
+          hotel_id: topPick.hotel.hotel_id,
+          hotel_name: topPick.hotel.hotel_name,
+          score: topPick.decision_brief?.score ?? null,
+          choose_reasons: topPick.decision_brief?.choose_reasons || [],
+          best_for: topPick.decision_brief?.best_for || [],
+        }
+      : null,
+    best_value: bestValue
+      ? {
+          hotel_id: bestValue.hotel.hotel_id,
+          hotel_name: bestValue.hotel.hotel_name,
+          supplier_min_price_cny: bestValue.hotel?.search_price?.supplier_min_price_cny ?? null,
+        }
+      : null,
+    strongest_benefits: strongestBenefits
+      ? {
+          hotel_id: strongestBenefits.hotel.hotel_id,
+          hotel_name: strongestBenefits.hotel.hotel_name,
+          benefit_count:
+            (strongestBenefits.hotel?.membership_benefits?.interest_count || 0) +
+            (strongestBenefits.hotel?.membership_benefits?.promotion_count || 0),
+        }
+      : null,
+    strongest_static_story: strongestStaticStory
+      ? {
+          hotel_id: strongestStaticStory.hotel.hotel_id,
+          hotel_name: strongestStaticStory.hotel.hotel_name,
+          positioning: strongestStaticStory.hotel?.static_story?.positioning || null,
+        }
+      : null,
+    strongest_location_story: strongestLocationStory
+      ? {
+          hotel_id: strongestLocationStory.hotel.hotel_id,
+          hotel_name: strongestLocationStory.hotel.hotel_name,
+          access_highlights: strongestLocationStory.hotel?.static_story?.access_highlights || [],
+        }
+      : null,
+  };
+}
+
+function rankSearchHotels(normalizedHotels, rawHotelMap, params = {}, searchContext = {}) {
+  const appliedPreferences = resolveHotelComparisonPreferences(params, searchContext.stayContext || null);
+  const scored = buildWeightedScoreBreakdown(
+    asArray(normalizedHotels).map((hotel, index) => ({
+      hotel,
+      index,
+      query_match: searchContext.enableQueryRelevance
+        ? buildSearchQueryMatch(rawHotelMap.get(hotel.hotel_id) || {}, searchContext.query)
+        : null,
+      metrics: computeHotelMetricInputs(hotel),
+    })),
+    appliedPreferences.weights,
+    {
+      quality: "desc",
+      price: "asc",
+      perks: "desc",
+      luxury: "desc",
+      location: "desc",
+      flexibility: "desc",
+      low_due_now: "asc",
+    },
+    [
+      (item) => {
+        if (!searchContext.query || !item?.query_match) {
+          return null;
+        }
+
+        const contribution =
+          item.query_match.match_type === "exact"
+            ? 16
+            : item.query_match.match_type === "prefix"
+              ? 10
+              : 4;
+
+        return {
+          preference: "query_relevance",
+          status: item.query_match.match_type,
+          contribution,
+          note: item.query_match.note,
+        };
+      },
+    ]
+  ).map((item) => ({
+    ...item,
+    decision_brief: buildHotelDecisionBrief(item.hotel, null, item.score_breakdown),
+  }));
+
+  const ranked = [...scored].sort((a, b) => {
+    const scoreDiff = (b.total_score ?? 0) - (a.total_score ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+
+    const matchScoreA = 100 - (a.query_match?.relevance_score ?? 0);
+    const matchScoreB = 100 - (b.query_match?.relevance_score ?? 0);
+    if (matchScoreA !== matchScoreB) return matchScoreA - matchScoreB;
+
+    return (a.index ?? 0) - (b.index ?? 0);
+  });
+
+  return {
+    applied_preferences: buildRoundedAppliedPreferences(appliedPreferences),
+    comparison_method: {
+      type: "weighted_search_shortlist_ranking",
+      score_scale: "0-100 weighted dimensions plus query relevance modifiers",
+      price_dimension: "search_stage_supplier_min_price_cny when available",
+      note: "Search-stage ranking favors explainable shortlist fit; validate room/rate inventory before booking.",
+    },
+    ranked,
+    selection_guide: buildSearchShortlistGuide(ranked),
+  };
+}
+
+async function buildRankedHotelSection(api, db, rawHotels, params, options = {}) {
+  const uniqueHotels = uniqueBy(asArray(rawHotels), (hotel) => normalizeId(hotel?.id));
+
+  if (uniqueHotels.length === 0) {
+    return {
+      section_type: options.sectionType || "search_section",
+      summary: "No hotel rows were available for this section.",
+      applied_preferences: buildRoundedAppliedPreferences(
+        resolveHotelComparisonPreferences(params, options.stayContext || null)
+      ),
+      comparison_method: {
+        type: "weighted_search_shortlist_ranking",
+        score_scale: "0-100 weighted dimensions plus query relevance modifiers",
+        price_dimension: "search_stage_supplier_min_price_cny when available",
+        note: "Search-stage ranking favors explainable shortlist fit; validate room/rate inventory before booking.",
+      },
+      selection_guide: {},
+      count: 0,
+      total_matches: 0,
+      next_offset: null,
+      results: [],
+      ranked: [],
+    };
+  }
+
+  const rawHotelMap = new Map(
+    uniqueHotels
+      .map((hotel) => [normalizeId(hotel?.id), hotel])
+      .filter(([hotelId]) => Boolean(hotelId))
+  );
+  const priceMap = await loadPriceMap(
+    api,
+    uniqueHotels.map((hotel) => hotel?.id),
+    options.stayContext || null
+  );
+  const normalizedHotels = await buildHotelSummaryBatch(db, uniqueHotels, {
+    priceMap,
+    stayContext: options.stayContext || null,
+    matchSource: options.matchSource || null,
+  });
+  const rankedSearch = rankSearchHotels(normalizedHotels, rawHotelMap, params, {
+    query: options.query || "",
+    stayContext: options.stayContext || null,
+    enableQueryRelevance: Boolean(options.enableQueryRelevance),
+  });
+  const totalMatches = rankedSearch.ranked.length;
+  const offset = options.offset || 0;
+  const limit = options.limit || totalMatches;
+  const results = rankedSearch.ranked.slice(offset, offset + limit).map((item, index) => ({
+    ...item.hotel,
+    search_rank: offset + index + 1,
+    shortlist_score: item.decision_brief?.score ?? null,
+    query_match: item.query_match,
+    decision_brief: item.decision_brief,
+  }));
+
+  return {
+    section_type: options.sectionType || "search_section",
+    summary:
+      results.length > 0
+        ? `Ranked ${results.length} hotel result(s). Top pick: ${rankedSearch.ranked[0]?.hotel?.hotel_name || "N/A"}.`
+        : "No ranked hotel results were produced.",
+    applied_preferences: rankedSearch.applied_preferences,
+    comparison_method: rankedSearch.comparison_method,
+    selection_guide: rankedSearch.selection_guide,
+    count: results.length,
+    total_matches: totalMatches,
+    next_offset: offset + results.length < totalMatches ? offset + results.length : null,
+    results,
+    ranked: rankedSearch.ranked,
+  };
+}
+
+function buildHotelCandidateRows(hotelSeedRows, directHotelSection = null, limit = 5) {
+  const enrichedMap = new Map(
+    asArray(directHotelSection?.results).map((hotel) => [hotel.hotel_id, hotel])
+  );
+
+  return asArray(hotelSeedRows)
+    .slice(0, limit)
+    .map((row) => {
+      const enriched = enrichedMap.get(row.hotel_id) || null;
+      return {
+        hotel_id: row.hotel_id,
+        hotel_name: enriched?.hotel_name || row.hotel_name,
+        hotel_name_en: enriched?.hotel_name_en || row.hotel_name_en || null,
+        match: row.match,
+        city: enriched?.city || null,
+        brand: enriched?.brand || null,
+        quality_signals: enriched?.quality_signals || null,
+        search_price: enriched?.search_price || null,
+        grounding_excerpt: enriched?.grounding_excerpt || null,
+        static_story: enriched?.static_story
+          ? {
+              positioning: enriched.static_story.positioning,
+              traveler_fit_highlights: asArray(enriched.static_story.traveler_fit_highlights).slice(0, 3),
+            }
+          : null,
+      };
+    });
+}
+
+function buildQueryResolution({
+  source,
+  query,
+  cityId,
+  cityName,
+  routeDecision,
+  cityCandidates,
+  hotelCandidates,
+}) {
+  return {
+    source,
+    input_query: query || cityName || null,
+    explicit_city_id: cityId || null,
+    detected_intent: routeDecision.detected_intent,
+    confidence: routeDecision.confidence,
+    recommended_route: routeDecision.recommended_route,
+    reason: routeDecision.reason,
+    candidate_counts: {
+      city_candidates: asArray(cityCandidates).length,
+      hotel_candidates: asArray(hotelCandidates).length,
+    },
+    top_city_candidate: cityCandidates[0] || null,
+    top_hotel_candidate: hotelCandidates[0] || null,
   };
 }
 
@@ -1632,8 +2350,10 @@ export async function searchHotels(api, db, params) {
   const query = String(params.query || "").trim();
   const cityId = normalizeId(params.city_id);
   const cityName = String(params.city_name || "").trim() || null;
-  const limit = params.limit;
+  const limit = params.limit || 5;
   const offset = params.offset || 0;
+  const source = cityId ? "city_id" : cityName ? "city_name" : "query";
+  const candidateLimit = Math.max(3, Math.min(limit || 5, 5));
 
   const stayContext =
     params.checkin && params.checkout
@@ -1646,21 +2366,53 @@ export async function searchHotels(api, db, params) {
 
   let searchStrategy = null;
   let resolvedCity = null;
-  let hotels = [];
+  let cityCandidates = [];
+  let hotelSeedRows = [];
+  let hotelCandidates = [];
+  let cityInventorySection = null;
+  let directHotelSection = null;
+  let exposeCityInventorySection = false;
+  let exposeDirectHotelSection = false;
 
-  if (cityId) {
-    searchStrategy = query ? "city_inventory_filtered" : "city_inventory";
+  if (source === "city_id") {
     resolvedCity = { id: cityId, name: cityName, nameEn: null };
-    hotels = await api.searchHotelsByCity(cityId);
+    searchStrategy = query ? "city_inventory_filtered" : "city_inventory";
 
-    if (query) {
-      hotels = filterHotelsByQuery(hotels, query);
-    }
-  } else if (cityName) {
-    const suggest = await api.searchSuggest(cityName);
-    resolvedCity = suggest.cities[0] || null;
+    const [cityHotels, cityGroundingMap] = await Promise.all([
+      api.searchHotelsByCity(cityId),
+      getCityGroundingSnapshotMap(db, [cityId]),
+    ]);
+
+    cityCandidates = [buildExplicitCityCandidateRow(resolvedCity, cityGroundingMap.get(cityId) || null)];
+    exposeCityInventorySection = true;
+    cityInventorySection = await buildRankedHotelSection(
+      api,
+      db,
+      query ? filterHotelsByQuery(cityHotels, query) : cityHotels,
+      params,
+      {
+        query,
+        stayContext,
+        matchSource: searchStrategy,
+        offset,
+        limit,
+        enableQueryRelevance: Boolean(query),
+        sectionType: "city_inventory_shortlist",
+      }
+    );
+  } else if (source === "city_name") {
+    const rawCityCandidates = await api.searchCitiesOnly(cityName);
+    cityCandidates = await buildCityCandidateRows(db, rawCityCandidates, cityName, candidateLimit);
+    resolvedCity = normalizeResolvedCityCandidate(selectBestCityCandidate(rawCityCandidates, cityName));
 
     if (!resolvedCity) {
+      const routeDecision = {
+        detected_intent: "unknown",
+        recommended_route: "no_match",
+        confidence: "low",
+        reason: `No live city candidate was resolved for "${cityName}".`,
+      };
+
       return buildAgenticToolResult({
         tool: "search_hotels",
         status: "not_found",
@@ -1670,7 +2422,6 @@ export async function searchHotels(api, db, params) {
           buildNextTool("search_cities_live", "Resolve a valid Bitvoya city id first.", ["keyword"]),
           buildNextTool("search_destination_suggestions", "Try mixed city/hotel suggestion resolution.", ["query"]),
         ],
-        entity_refs: {},
         data: {
           search_context: buildSearchContext({
             query,
@@ -1682,7 +2433,20 @@ export async function searchHotels(api, db, params) {
             limit,
             stayContext,
           }),
+          query_resolution: buildQueryResolution({
+            source,
+            query,
+            cityId,
+            cityName,
+            routeDecision,
+            cityCandidates,
+            hotelCandidates: [],
+          }),
           pricing_notice: buildSearchPricingNotice(stayContext),
+          city_candidates: cityCandidates,
+          hotel_candidates: [],
+          city_inventory_shortlist: null,
+          direct_hotel_matches: null,
           count: 0,
           total_matches: 0,
           next_offset: null,
@@ -1691,34 +2455,105 @@ export async function searchHotels(api, db, params) {
       });
     }
 
-    hotels = await api.searchHotelsByCity(resolvedCity.id);
-    searchStrategy = query ? "city_inventory_filtered" : "city_inventory";
+    searchStrategy = "city_inventory";
+    exposeCityInventorySection = true;
+    const cityHotels = await api.searchHotelsByCity(resolvedCity.id);
+    cityInventorySection = await buildRankedHotelSection(api, db, cityHotels, params, {
+      query,
+      stayContext,
+      matchSource: searchStrategy,
+      offset,
+      limit,
+      enableQueryRelevance: false,
+      sectionType: "city_inventory_shortlist",
+    });
+  } else {
+    const [rawCityCandidates, suggest] = await Promise.all([
+      api.searchCitiesOnly(query).catch(() => []),
+      api.searchSuggest(query),
+    ]);
 
-    if (query) {
-      hotels = filterHotelsByQuery(hotels, query);
+    cityCandidates = await buildCityCandidateRows(db, rawCityCandidates, query, candidateLimit);
+    hotelSeedRows = buildHotelCandidateSeedRows(
+      suggest.hotels,
+      query,
+      Math.max(candidateLimit, offset + limit)
+    );
+
+    const routeDecision = resolveSearchRoute({
+      source,
+      cityCandidates,
+      hotelCandidates: hotelSeedRows,
+    });
+    const topCityCandidate = cityCandidates[0] || null;
+    const topHotelCandidate = hotelSeedRows[0] || null;
+    const expandCityInventory = shouldExpandCityInventory({
+      source,
+      routeDecision,
+      topCityCandidate,
+    });
+    const expandDirectHotels = shouldExpandDirectHotels({
+      source,
+      routeDecision,
+      topHotelCandidate,
+    });
+    exposeCityInventorySection = expandCityInventory;
+    exposeDirectHotelSection = expandDirectHotels;
+
+    const tasks = [];
+
+    if (expandCityInventory && topCityCandidate?.city_id) {
+      resolvedCity = {
+        id: topCityCandidate.city_id,
+        name: topCityCandidate.city_name,
+        nameEn: topCityCandidate.city_name_en,
+      };
+      searchStrategy = "city_inventory_from_query";
+      tasks.push(
+        (async () => {
+          const cityHotels = await api.searchHotelsByCity(topCityCandidate.city_id);
+          cityInventorySection = await buildRankedHotelSection(api, db, cityHotels, params, {
+            query,
+            stayContext,
+            matchSource: searchStrategy,
+            offset,
+            limit,
+            enableQueryRelevance: false,
+            sectionType: "city_inventory_shortlist",
+          });
+        })()
+      );
     }
-  } else if (query) {
-    const suggest = await api.searchSuggest(query);
-    const cityCandidate = suggest.cities[0] || null;
-    const hotelCandidates = asArray(suggest.hotels);
 
-    if (cityCandidate && (cityMatchesQuery(cityCandidate, query) || hotelCandidates.length === 0)) {
-      resolvedCity = cityCandidate;
-      hotels = await api.searchHotelsByCity(cityCandidate.id);
-      searchStrategy = "city_inventory_from_query";
-    } else if (hotelCandidates.length > 0) {
-      hotels = await loadHotelDetailsForSuggestions(api, hotelCandidates.slice(0, limit + offset));
-      searchStrategy = "hotel_suggestions";
-    } else if (cityCandidate) {
-      resolvedCity = cityCandidate;
-      hotels = await api.searchHotelsByCity(cityCandidate.id);
-      searchStrategy = "city_inventory_from_query";
-    } else {
+    if (hotelSeedRows.length > 0) {
+      tasks.push(
+        (async () => {
+          const directHotels = await loadHotelDetailsForSuggestions(
+            api,
+            hotelSeedRows.slice(0, Math.max(limit + offset, candidateLimit)).map((row) => row.hotel)
+          );
+          directHotelSection = await buildRankedHotelSection(api, db, directHotels, params, {
+            query,
+            stayContext,
+            matchSource: "hotel_suggestions",
+            offset,
+            limit,
+            enableQueryRelevance: true,
+            sectionType: "direct_hotel_matches",
+          });
+        })()
+      );
+    }
+
+    await Promise.all(tasks);
+    hotelCandidates = buildHotelCandidateRows(hotelSeedRows, directHotelSection, candidateLimit);
+
+    if (!topCityCandidate && !topHotelCandidate) {
       return buildAgenticToolResult({
         tool: "search_hotels",
         status: "not_found",
         intent: "hotel_inventory_discovery",
-        summary: `No live hotel inventory match was found for "${query}".`,
+        summary: `No live city or hotel match was found for "${query}".`,
         recommended_next_tools: [
           buildNextTool("search_destination_suggestions", "Resolve the query through the Bitvoya suggest index.", [
             "query",
@@ -1738,7 +2573,20 @@ export async function searchHotels(api, db, params) {
             limit,
             stayContext,
           }),
+          query_resolution: buildQueryResolution({
+            source,
+            query,
+            cityId,
+            cityName,
+            routeDecision,
+            cityCandidates,
+            hotelCandidates,
+          }),
           pricing_notice: buildSearchPricingNotice(stayContext),
+          city_candidates: cityCandidates,
+          hotel_candidates: hotelCandidates,
+          city_inventory_shortlist: null,
+          direct_hotel_matches: null,
           count: 0,
           total_matches: 0,
           next_offset: null,
@@ -1746,35 +2594,99 @@ export async function searchHotels(api, db, params) {
         },
       });
     }
-  } else {
-    throw new Error("One of city_id, city_name, or query is required.");
   }
 
-  const totalMatches = hotels.length;
-  const pagedHotels = hotels.slice(offset, offset + limit);
-  const priceMap = await loadPriceMap(
-    api,
-    pagedHotels.map((hotel) => hotel?.id),
-    stayContext
-  );
-  const results = await buildHotelSummaryBatch(db, pagedHotels, {
-    priceMap,
-    stayContext,
-    matchSource: searchStrategy,
+  const routeDecision = resolveSearchRoute({
+    source,
+    cityCandidates,
+    hotelCandidates: hotelCandidates.length > 0 ? hotelCandidates : hotelSeedRows,
   });
+
+  if (hotelCandidates.length === 0 && hotelSeedRows.length > 0) {
+    hotelCandidates = buildHotelCandidateRows(hotelSeedRows, directHotelSection, candidateLimit);
+  }
+
+  const activeSection =
+    routeDecision.recommended_route === "direct_hotel"
+      ? directHotelSection || cityInventorySection
+      : routeDecision.recommended_route === "ambiguous_review"
+        ? directHotelSection || cityInventorySection
+        : cityInventorySection || directHotelSection;
+  const combinedResults = [
+    ...asArray(cityInventorySection?.results),
+    ...asArray(directHotelSection?.results),
+  ];
+  const assumptions = [];
+
+  if (!stayContext) {
+    assumptions.push(
+      "Without checkin/checkout, shortlist ranking uses static context and search-stage pricing only."
+    );
+  }
+
+  if (params.require_free_cancellation) {
+    assumptions.push(
+      "Free-cancellation preference cannot be confirmed at search stage; validate it with get_hotel_rooms or compare_hotels."
+    );
+  }
+
+  if (params.payment_preference && params.payment_preference !== "any") {
+    assumptions.push(
+      "payment_preference biases the shortlist, but actual guarantee/prepay support must be validated on live rates."
+    );
+  }
+
+  if (routeDecision.recommended_route === "ambiguous_review") {
+    assumptions.push(
+      "The query matched both destination and hotel signals; inspect query_resolution and both candidate sections before narrowing."
+    );
+  }
+
+  const status =
+    activeSection?.count || combinedResults.length > 0 || cityCandidates.length > 0 || hotelCandidates.length > 0
+      ? "ok"
+      : "not_found";
+  const queryResolution = buildQueryResolution({
+    source,
+    query,
+    cityId,
+    cityName,
+    routeDecision,
+    cityCandidates,
+    hotelCandidates,
+  });
+  const searchContextResolvedCity =
+    resolvedCity ||
+    (cityCandidates[0]
+      ? {
+          id: cityCandidates[0].city_id,
+          name: cityCandidates[0].city_name,
+          nameEn: cityCandidates[0].city_name_en,
+        }
+      : null);
+  const summary =
+    source === "query"
+      ? `Resolved "${query}" into ${cityCandidates.length} city candidate(s) and ${hotelCandidates.length} hotel candidate(s). ` +
+        `Recommended route: ${routeDecision.recommended_route}.` +
+        (activeSection?.count
+          ? ` Expanded ${activeSection.count} ranked hotel result(s) from the recommended track.`
+          : "")
+      : cityInventorySection?.count
+        ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s).`
+        : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
 
   return buildAgenticToolResult({
     tool: "search_hotels",
-    status: results.length > 0 ? "ok" : "not_found",
+    status,
     intent: "hotel_inventory_discovery",
-    summary:
-      results.length > 0
-        ? `Found ${results.length} live hotel inventory matches${resolvedCity?.name ? ` in ${resolvedCity.name}` : ""}. Top matches: ${summarizeTopLabels(results, "hotel_name")}.`
-        : "No live hotel inventory matches were returned.",
+    summary,
     recommended_next_tools:
-      results.length > 0
+      activeSection?.count
         ? [
-            buildNextTool("get_hotel_detail", "Inspect one property's static and grounded detail before rate search.", [
+            buildNextTool("get_hotel_detail", "Inspect one shortlisted property's static and grounded detail before rate search.", [
+              "hotel_id",
+            ]),
+            buildNextTool("get_hotel_profile", "Open the richer static property profile when shortlist differentiation is still weak.", [
               "hotel_id",
             ]),
             buildNextTool("get_hotel_rooms", "Check live rate inventory for one selected hotel.", [
@@ -1786,37 +2698,90 @@ export async function searchHotels(api, db, params) {
               "hotel_ids",
             ]),
           ]
-        : [],
+        : [
+            buildNextTool("search_destination_suggestions", "Resolve the query through the mixed suggest layer when live candidates are thin.", [
+              "query",
+            ]),
+          ],
     pricing_notes: [
       "search_price.supplier_min_price_cny is only a search-stage supplier signal.",
       "Use get_hotel_rooms for checkout-relevant display_total_cny and service_fee_cny.",
     ],
     selection_hints: [
-      "Prefer hotels with grounding_excerpt when the agent needs explainable recommendations.",
+      "Read query_resolution.recommended_route first, then inspect both city_candidates and hotel_candidates when the query is ambiguous.",
+      "Use city_inventory_shortlist when the input behaves like a destination search.",
+      "Use direct_hotel_matches when the input behaves like a specific-property search.",
+      "Use decision_brief.choose_reasons and tradeoffs to build shortlist explanations directly in the agent.",
       "Do not use search-stage prices as final payable totals.",
     ],
+    assumptions,
     entity_refs: {
-      city_ids: [resolvedCity?.id, cityId],
-      hotel_ids: results.map((hotel) => hotel.hotel_id),
-      tripwiki_city_ids: results.map((hotel) => hotel?.city_grounding_excerpt?.tripwiki_city_id),
-      tripwiki_hotel_ids: results.map((hotel) => hotel?.grounding_excerpt?.tripwiki_hotel_id),
+      city_ids: [
+        cityId,
+        resolvedCity?.id,
+        ...cityCandidates.map((city) => city.city_id),
+        ...combinedResults.map((hotel) => hotel?.city?.source_city_id),
+      ],
+      hotel_ids: [
+        ...hotelCandidates.map((hotel) => hotel.hotel_id),
+        ...combinedResults.map((hotel) => hotel.hotel_id),
+      ],
+      tripwiki_city_ids: [
+        ...cityCandidates.map((city) => city?.grounding_excerpt?.tripwiki_city_id),
+        ...combinedResults.map((hotel) => hotel?.city_grounding_excerpt?.tripwiki_city_id),
+      ],
+      tripwiki_hotel_ids: [
+        ...hotelCandidates.map((hotel) => hotel?.grounding_excerpt?.tripwiki_hotel_id),
+        ...combinedResults.map((hotel) => hotel?.grounding_excerpt?.tripwiki_hotel_id),
+      ],
     },
     data: {
       search_context: buildSearchContext({
         query,
         cityId,
         cityName,
-        resolvedCity,
-        strategy: searchStrategy,
+        resolvedCity: searchContextResolvedCity,
+        strategy: searchStrategy || routeDecision.recommended_route,
         offset,
         limit,
         stayContext,
       }),
+      query_resolution: queryResolution,
       pricing_notice: buildSearchPricingNotice(stayContext),
-      count: results.length,
-      total_matches: totalMatches,
-      next_offset: offset + results.length < totalMatches ? offset + results.length : null,
-      results,
+      city_candidates: cityCandidates,
+      hotel_candidates: hotelCandidates,
+      city_inventory_shortlist: exposeCityInventorySection && cityInventorySection
+        ? {
+            summary: cityInventorySection.summary,
+            resolved_city: searchContextResolvedCity,
+            applied_preferences: cityInventorySection.applied_preferences,
+            comparison_method: cityInventorySection.comparison_method,
+            selection_guide: cityInventorySection.selection_guide,
+            count: cityInventorySection.count,
+            total_matches: cityInventorySection.total_matches,
+            next_offset: cityInventorySection.next_offset,
+            results: cityInventorySection.results,
+          }
+        : null,
+      direct_hotel_matches: exposeDirectHotelSection && directHotelSection
+        ? {
+            summary: directHotelSection.summary,
+            applied_preferences: directHotelSection.applied_preferences,
+            comparison_method: directHotelSection.comparison_method,
+            selection_guide: directHotelSection.selection_guide,
+            count: directHotelSection.count,
+            total_matches: directHotelSection.total_matches,
+            next_offset: directHotelSection.next_offset,
+            results: directHotelSection.results,
+          }
+        : null,
+      applied_preferences: activeSection?.applied_preferences || null,
+      comparison_method: activeSection?.comparison_method || null,
+      selection_guide: activeSection?.selection_guide || null,
+      count: activeSection?.count || 0,
+      total_matches: activeSection?.total_matches || 0,
+      next_offset: activeSection?.next_offset || null,
+      results: activeSection?.results || [],
     },
   });
 }

@@ -222,9 +222,30 @@ server.registerTool(
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for pricing lookup."),
       offset: z.number().int().min(0).max(200).optional().describe("Result offset for local pagination."),
       limit: z.number().int().min(1).max(20).optional().describe("Maximum number of hotels to return."),
+      priority_profile: hotelComparisonPriorityProfileSchema
+        .optional()
+        .describe("How to rank the returned shortlist: balanced, price, perks, luxury, location, flexibility, or low_due_now."),
+      payment_preference: paymentPreferenceSchema
+        .optional()
+        .describe("Optional preferred payment path to bias shortlist ranking."),
+      require_free_cancellation: z.boolean().optional().describe("Bias shortlist logic toward flexible inventory; must still be validated on live rates."),
+      prefer_benefits: z.boolean().optional().describe("Bias shortlist logic toward explicit member/perk payloads."),
     },
   }),
-  async ({ query, city_id, city_name, checkin, checkout, adult_num, offset, limit }) => {
+  async ({
+    query,
+    city_id,
+    city_name,
+    checkin,
+    checkout,
+    adult_num,
+    offset,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  }) => {
     if (!query && !city_id && !city_name) {
       throw new Error("One of query, city_id, or city_name is required.");
     }
@@ -240,6 +261,10 @@ server.registerTool(
       adult_num: adult_num || 2,
       offset: resolvedOffset,
       limit: resolvedLimit,
+      priority_profile,
+      payment_preference,
+      require_free_cancellation,
+      prefer_benefits,
     });
     return asTextResult(payload);
   }
