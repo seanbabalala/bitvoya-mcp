@@ -9,6 +9,7 @@ import {
   compareRates,
   getHotelDetail,
   getHotelRooms,
+  searchHotels,
 } from "../src/tools/hotels.mjs";
 
 export async function runDiscoverySmoke() {
@@ -18,6 +19,10 @@ export async function runDiscoverySmoke() {
 
   try {
     const hotelDetail = await getHotelDetail(api, db, { hotel_id: "875" });
+    const hotelSearchEnglish = await searchHotels(api, db, {
+      query: "Shanghai Himalayas Hotel",
+      limit: 3,
+    });
     const hotelRooms = await getHotelRooms(api, db, {
       hotel_id: "875",
       checkin: "2026-05-01",
@@ -52,15 +57,17 @@ export async function runDiscoverySmoke() {
       prefer_benefits: true,
     });
 
-    for (const payload of [hotelDetail, hotelRooms, comparedHotels, comparedRates]) {
+    for (const payload of [hotelDetail, hotelSearchEnglish, hotelRooms, comparedHotels, comparedRates]) {
       agenticToolOutputSchema.parse(payload);
     }
 
     assert.equal(hotelDetail.status, "ok");
+    assert.equal(hotelSearchEnglish.status, "ok");
     assert.equal(hotelRooms.status, "ok");
     assert.equal(comparedHotels.status, "ok");
     assert.equal(comparedRates.status, "ok");
     assert.equal(hotelDetail.data?.found, true);
+    assert.ok((hotelSearchEnglish.data?.results || []).length > 0);
     assert.equal(hotelRooms.data?.found, true);
     assert.ok((hotelRooms.data?.selection_guide?.top_recommendations || []).length > 0);
     assert.ok((comparedHotels.data?.ranked_hotels || []).length >= 2);
@@ -68,6 +75,16 @@ export async function runDiscoverySmoke() {
 
     const result = {
       hotel_detail: hotelDetail.summary,
+      search_hotels_english: {
+        summary: hotelSearchEnglish.summary,
+        recommended_route: hotelSearchEnglish.data?.query_resolution?.recommended_route,
+        top_result: hotelSearchEnglish.data?.results?.[0]
+          ? {
+              hotel_id: hotelSearchEnglish.data.results[0].hotel_id,
+              hotel_name: hotelSearchEnglish.data.results[0].hotel_name,
+            }
+          : null,
+      },
       hotel_rooms: hotelRooms.data?.selection_guide?.recommended_rate
         ? {
             summary: hotelRooms.summary,

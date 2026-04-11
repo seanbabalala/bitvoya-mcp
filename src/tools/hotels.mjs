@@ -243,6 +243,55 @@ function selectBestCityCandidate(cities, query) {
   return scored[0]?.city || null;
 }
 
+function tokenizeSearchIdentity(value) {
+  const normalized = normalizeSearchText(value)
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return [];
+  }
+
+  return Array.from(new Set(normalized.split(/\s+/).filter(Boolean)));
+}
+
+function scoreTokenIdentityMatch(fieldValue, normalizedQuery) {
+  const fieldTokens = tokenizeSearchIdentity(fieldValue);
+  const queryTokens = tokenizeSearchIdentity(normalizedQuery);
+
+  if (fieldTokens.length < 2 || queryTokens.length < 2) {
+    return null;
+  }
+
+  const fieldSet = new Set(fieldTokens);
+  const overlapCount = queryTokens.filter((token) => fieldSet.has(token)).length;
+
+  if (overlapCount < 2) {
+    return null;
+  }
+
+  const queryCoverage = overlapCount / queryTokens.length;
+  const fieldCoverage = overlapCount / fieldTokens.length;
+
+  if (queryCoverage === 1 && fieldCoverage === 1) {
+    return 1.25;
+  }
+
+  if (queryCoverage === 1 && fieldCoverage >= 0.6) {
+    return 1.5;
+  }
+
+  if (queryCoverage >= 0.75) {
+    return 2.25;
+  }
+
+  if (queryCoverage >= 0.6) {
+    return 2.5;
+  }
+
+  return null;
+}
+
 function scoreHotelIdentityMatch(hotel, query) {
   const normalizedQuery = normalizeSearchText(query);
   if (!normalizedQuery) return null;
@@ -272,6 +321,12 @@ function scoreHotelIdentityMatch(hotel, query) {
 
     if (field.includes(normalizedQuery)) {
       bestScore = Math.min(bestScore, 2);
+      continue;
+    }
+
+    const tokenScore = scoreTokenIdentityMatch(field, normalizedQuery);
+    if (tokenScore !== null) {
+      bestScore = Math.min(bestScore, tokenScore);
     }
   }
 
@@ -317,23 +372,33 @@ function buildSearchMatchDescriptor(score, scope) {
       ? { match_type: "exact", relevance_score: 100 }
       : score === 1
         ? { match_type: "prefix", relevance_score: 88 }
-        : { match_type: "contains", relevance_score: 72 };
+        : score < 2
+          ? { match_type: "token_set", relevance_score: 84 }
+          : score === 2
+            ? { match_type: "contains", relevance_score: 72 }
+            : { match_type: "token_overlap", relevance_score: 64 };
 
   const noteByScope = {
     city: {
       exact: "Exact city identity match.",
       prefix: "Strong prefix match against a live city candidate.",
       contains: "Partial city-name match.",
+      token_set: "Strong token-order-insensitive match against a live city candidate.",
+      token_overlap: "Partial token overlap against a live city candidate.",
     },
     hotel: {
       exact: "Exact hotel or brand match.",
       prefix: "Strong prefix match against hotel or brand identity.",
       contains: "Partial hotel or brand match.",
+      token_set: "Strong token-order-insensitive match against hotel or brand identity.",
+      token_overlap: "Partial token overlap against hotel or brand identity.",
     },
     explicit_city: {
       exact: "Explicit city input provided by the caller.",
       prefix: "Explicit city input provided by the caller.",
       contains: "Explicit city input provided by the caller.",
+      token_set: "Explicit city input provided by the caller.",
+      token_overlap: "Explicit city input provided by the caller.",
     },
   };
 
@@ -410,6 +475,7 @@ function buildHotelCandidateSeedRows(rawHotels, query, limit = 5) {
       hotel_name: firstNonEmpty(hotel?.name),
       hotel_name_en: firstNonEmpty(hotel?.nameEn),
       match: buildSearchMatchDescriptor(scoreHotelIdentityMatch(hotel, query), "hotel"),
+      match_origin: "live_suggest",
       sales: asNullableNumber(hotel?.sales),
     }))
     .filter((row) => row.hotel_id && row.match);
@@ -2204,6 +2270,14 @@ function buildHotelCandidateRows(hotelSeedRows, directHotelSection = null, limit
         hotel_name: enriched?.hotel_name || row.hotel_name,
         hotel_name_en: enriched?.hotel_name_en || row.hotel_name_en || null,
         match: row.match,
+        match_origin: row.match_origin || null,
+        identity_signals: {
+          display_name: enriched?.hotel_name_en || enriched?.hotel_name || row.hotel_name_en || row.hotel_name || null,
+          alternate_names: uniqueTexts(
+            [enriched?.hotel_name, enriched?.hotel_name_en, row.hotel_name, row.hotel_name_en],
+            3
+          ),
+        },
         city: enriched?.city || null,
         brand: enriched?.brand || null,
         quality_signals: enriched?.quality_signals || null,
