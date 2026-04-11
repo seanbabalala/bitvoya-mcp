@@ -782,6 +782,8 @@ server.registerTool(
         first_name: z.string().min(1),
         last_name: z.string().min(1),
         gender: z.string().optional(),
+        frequent_traveler: z.string().optional(),
+        membership_level: z.string().optional(),
       }),
       contact: z.object({
         email: z.string().min(1),

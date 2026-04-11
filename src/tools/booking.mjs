@@ -169,7 +169,28 @@ function requireGuestPrimary(guestPrimary) {
     first_name: firstName,
     last_name: lastName,
     gender: guestPrimary?.gender || null,
+    frequent_traveler: guestPrimary?.frequent_traveler || null,
+    membership_level: guestPrimary?.membership_level || null,
   };
+}
+
+function composeFullPhone(contact) {
+  const explicit = String(contact?.full_phone || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const phone = String(contact?.phone || "").trim();
+  if (!phone) {
+    return null;
+  }
+
+  const prefix = String(contact?.custom_country_code || contact?.country_code || "").trim();
+  if (!prefix) {
+    return phone;
+  }
+
+  return `${prefix}${phone}`;
 }
 
 function requireContact(contact) {
@@ -185,7 +206,7 @@ function requireContact(contact) {
     phone,
     country_code: contact?.country_code || null,
     custom_country_code: contact?.custom_country_code || null,
-    full_phone: contact?.full_phone || null,
+    full_phone: composeFullPhone(contact),
   };
 }
 
@@ -212,6 +233,19 @@ function normalizeChildren(children) {
     .filter((item) => Number.isFinite(item.age) && item.age >= 0 && item.age <= 17);
 }
 
+function buildChildrenDetails(children) {
+  if (!Array.isArray(children)) {
+    return [];
+  }
+
+  return children
+    .map((item, index) => ({
+      childNumber: index + 1,
+      age: asNullableNumber(item?.age),
+    }))
+    .filter((item) => Number.isFinite(item.age) && item.age >= 0 && item.age <= 17);
+}
+
 function buildGuestSnapshot({ guestPrimary, contact, companions, children, arrivalTime, specialRequests }) {
   return {
     guest_primary: guestPrimary,
@@ -232,6 +266,7 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
   const contact = intent?.guest_snapshot?.contact || {};
   const companions = intent?.guest_snapshot?.companions || [];
   const children = intent?.guest_snapshot?.children || [];
+  const childrenDetails = buildChildrenDetails(children);
 
   return {
     userInfo: intent.user_info || null,
@@ -285,12 +320,15 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
       "guest-first-name": guestPrimary.first_name,
       "guest-last-name": guestPrimary.last_name,
       "guest-gender": guestPrimary.gender,
+      "frequent-traveler": guestPrimary.frequent_traveler,
+      "membership-level": guestPrimary.membership_level,
       "country-code": contact.country_code,
       "custom-country-code": contact.custom_country_code,
       phone: contact.phone,
       email: contact.email,
       "arrival-time": intent.guest_snapshot.arrival_time,
       children: String(children.length),
+      childrenDetails,
       "additional-requests": intent.guest_snapshot.special_requests.join("; "),
       paymentMethod,
       "payment-method": paymentMethod,
@@ -308,6 +346,7 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
       "special-requests": intent.guest_snapshot.special_requests,
       "companion-first-name": companions[0]?.first_name || "",
       "companion-last-name": companions[0]?.last_name || "",
+      "companion-gender": companions[0]?.gender || "",
       creditCardInfo: cardBinding
         ? {
             cardNumberMasked: cardBinding.masked_number,
@@ -443,6 +482,8 @@ function buildQuoteRequiredInputs(quote, options = {}) {
     ],
     optional_at_intent_creation: [
       "guest_primary.gender",
+      "guest_primary.frequent_traveler",
+      "guest_primary.membership_level",
       "companions[]",
       "children[]",
       "arrival_time",
