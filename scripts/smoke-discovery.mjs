@@ -27,6 +27,14 @@ export async function runDiscoverySmoke() {
       query: "Shanghai Pudong",
       limit: 3,
     });
+    const hotelSearchGroundingFallback = await searchHotels(api, db, {
+      query: "Waldorf Astoria on the Bund",
+      limit: 3,
+    });
+    const hotelSearchAreaRecovery = await searchHotels(api, db, {
+      query: "Lujiazui Shanghai",
+      limit: 3,
+    });
     const hotelRooms = await getHotelRooms(api, db, {
       hotel_id: "875",
       checkin: "2026-05-01",
@@ -61,13 +69,15 @@ export async function runDiscoverySmoke() {
       prefer_benefits: true,
     });
 
-    for (const payload of [hotelDetail, hotelSearchEnglish, hotelSearchCluster, hotelRooms, comparedHotels, comparedRates]) {
+    for (const payload of [hotelDetail, hotelSearchEnglish, hotelSearchCluster, hotelSearchGroundingFallback, hotelSearchAreaRecovery, hotelRooms, comparedHotels, comparedRates]) {
       agenticToolOutputSchema.parse(payload);
     }
 
     assert.equal(hotelDetail.status, "ok");
     assert.equal(hotelSearchEnglish.status, "ok");
     assert.equal(hotelSearchCluster.status, "ok");
+    assert.equal(hotelSearchGroundingFallback.status, "ok");
+    assert.equal(hotelSearchAreaRecovery.status, "ok");
     assert.equal(hotelRooms.status, "ok");
     assert.equal(comparedHotels.status, "ok");
     assert.equal(comparedRates.status, "ok");
@@ -75,6 +85,18 @@ export async function runDiscoverySmoke() {
     assert.ok((hotelSearchEnglish.data?.results || []).length > 0);
     assert.equal(hotelSearchCluster.data?.query_resolution?.recommended_route, "ambiguous_review");
     assert.ok((hotelSearchCluster.data?.hotel_candidates || []).length >= 2);
+    assert.equal(hotelSearchGroundingFallback.data?.query_resolution?.recommended_route, "grounding_review");
+    assert.ok((hotelSearchGroundingFallback.data?.grounding_fallback_matches?.results || []).length > 0);
+    assert.match(
+      String(hotelSearchGroundingFallback.data?.query_resolution?.top_grounding_candidate?.hotel_name || ""),
+      /Waldorf Astoria/i
+    );
+    assert.equal(hotelSearchAreaRecovery.data?.query_resolution?.recommended_route, "grounding_review");
+    assert.ok((hotelSearchAreaRecovery.data?.grounding_fallback_matches?.results || []).length >= 2);
+    assert.equal(
+      hotelSearchAreaRecovery.data?.grounding_fallback_matches?.results?.[0]?.query_match?.match_type,
+      "semantic_grounding"
+    );
     assert.equal(hotelRooms.data?.found, true);
     assert.ok((hotelRooms.data?.selection_guide?.top_recommendations || []).length > 0);
     assert.ok((comparedHotels.data?.ranked_hotels || []).length >= 2);
@@ -96,6 +118,26 @@ export async function runDiscoverySmoke() {
         summary: hotelSearchCluster.summary,
         recommended_route: hotelSearchCluster.data?.query_resolution?.recommended_route,
         cluster_signal: hotelSearchCluster.data?.query_resolution?.cluster_signal,
+      },
+      search_hotels_grounding_fallback: {
+        summary: hotelSearchGroundingFallback.summary,
+        recommended_route: hotelSearchGroundingFallback.data?.query_resolution?.recommended_route,
+        top_grounding_candidate: hotelSearchGroundingFallback.data?.query_resolution?.top_grounding_candidate
+          ? {
+              hotel_name: hotelSearchGroundingFallback.data.query_resolution.top_grounding_candidate.hotel_name,
+              source_hotel_id: hotelSearchGroundingFallback.data.query_resolution.top_grounding_candidate.source_hotel_id,
+            }
+          : null,
+      },
+      search_hotels_area_recovery: {
+        summary: hotelSearchAreaRecovery.summary,
+        recommended_route: hotelSearchAreaRecovery.data?.query_resolution?.recommended_route,
+        top_result: hotelSearchAreaRecovery.data?.results?.[0]
+          ? {
+              hotel_name: hotelSearchAreaRecovery.data.results[0].hotel_name,
+              match_type: hotelSearchAreaRecovery.data.results[0].query_match?.match_type,
+            }
+          : null,
       },
       hotel_rooms: hotelRooms.data?.selection_guide?.recommended_rate
         ? {
