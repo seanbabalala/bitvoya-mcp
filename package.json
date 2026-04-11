@@ -13,7 +13,8 @@
     "smoke:all": "node ./scripts/smoke-all.mjs",
     "verify:agent-key": "node ./scripts/verify-agent-key.mjs",
     "create:handoff": "node ./scripts/create-handoff-session.mjs",
-    "migrate:auth": "node ./scripts/migrate-auth-schema.mjs"
+    "migrate:auth": "node ./scripts/migrate-auth-schema.mjs",
+    "deploy:remote": "bash ./scripts/deploy-remote-pm2.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
