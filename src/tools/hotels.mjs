@@ -454,6 +454,21 @@ async function buildCityCandidateRows(db, rawCities, query, limit = 5) {
   ).slice(0, limit);
 }
 
+function mergeCityCandidateSeeds(...sources) {
+  return uniqueBy(
+    sources.flatMap((source) =>
+      asArray(source)
+        .map((city) => ({
+          ...city,
+          cityId: normalizeId(firstNonEmpty(city?.cityId, city?.id)),
+          id: normalizeId(firstNonEmpty(city?.id, city?.cityId)),
+        }))
+        .filter((city) => city.cityId || city.id)
+    ),
+    (city) => normalizeId(firstNonEmpty(city?.cityId, city?.id))
+  );
+}
+
 function buildExplicitCityCandidateRow(resolvedCity, grounding = null) {
   return {
     city_id: normalizeId(resolvedCity?.id),
@@ -2144,7 +2159,11 @@ function rankSearchHotels(normalizedHotels, rawHotelMap, params = {}, searchCont
             ? 16
             : item.query_match.match_type === "prefix"
               ? 10
-              : 4;
+              : item.query_match.match_type === "token_set"
+                ? 8
+                : item.query_match.match_type === "contains"
+                  ? 4
+                  : 2;
 
         return {
           preference: "query_relevance",
@@ -2293,6 +2312,104 @@ function buildHotelCandidateRows(hotelSeedRows, directHotelSection = null, limit
     });
 }
 
+function buildHotelClusterSignal(hotelCandidates = []) {
+  const candidates = asArray(hotelCandidates).filter(Boolean);
+  if (candidates.length < 2) {
+    return null;
+  }
+
+  const cityBuckets = new Map();
+  const brandBuckets = new Map();
+
+  for (const candidate of candidates) {
+    const cityName = firstNonEmpty(candidate?.city?.city_name_en, candidate?.city?.city_name);
+    if (cityName) {
+      cityBuckets.set(cityName, (cityBuckets.get(cityName) || 0) + 1);
+    }
+
+    const brandName = firstNonEmpty(candidate?.brand?.name_en, candidate?.brand?.name);
+    if (brandName) {
+      brandBuckets.set(brandName, (brandBuckets.get(brandName) || 0) + 1);
+    }
+  }
+
+  const dominantCity = [...cityBuckets.entries()].sort((a, b) => b[1] - a[1])[0] || null;
+  const dominantBrand = [...brandBuckets.entries()].sort((a, b) => b[1] - a[1])[0] || null;
+
+  return {
+    candidate_hotel_count: candidates.length,
+    dominant_city: dominantCity
+      ? {
+          city_name: dominantCity[0],
+          share: roundScore((dominantCity[1] / candidates.length) * 100),
+        }
+      : null,
+    dominant_brand: dominantBrand
+      ? {
+          brand_name: dominantBrand[0],
+          share: roundScore((dominantBrand[1] / candidates.length) * 100),
+        }
+      : null,
+    sample_hotels: candidates.slice(0, 3).map((candidate) => ({
+      hotel_id: candidate.hotel_id,
+      hotel_name: candidate.hotel_name_en || candidate.hotel_name,
+      match_type: candidate?.match?.match_type || null,
+    })),
+  };
+}
+
+function refineSearchRouteDecision(routeDecision, { source, cityCandidates, hotelCandidates }) {
+  if (source !== "query" || routeDecision?.recommended_route !== "direct_hotel") {
+    return routeDecision;
+  }
+
+  const candidates = asArray(hotelCandidates).filter(Boolean);
+  if (candidates.length <= 1) {
+    return routeDecision;
+  }
+
+  const topScore = candidates[0]?.match?.relevance_score ?? 0;
+  const secondScore = candidates[1]?.match?.relevance_score ?? 0;
+  const topCityName = firstNonEmpty(candidates[0]?.city?.city_name_en, candidates[0]?.city?.city_name);
+  const sameCityCount = candidates.filter(
+    (candidate) =>
+      firstNonEmpty(candidate?.city?.city_name_en, candidate?.city?.city_name) === topCityName
+  ).length;
+  const clusterSignal = buildHotelClusterSignal(candidates);
+
+  if (topScore >= 100) {
+    return routeDecision;
+  }
+
+  if (topScore >= 88 && secondScore <= 64) {
+    return routeDecision;
+  }
+
+  if (asArray(cityCandidates).length === 0 && sameCityCount >= 2) {
+    return {
+      detected_intent: "cluster",
+      recommended_route: "ambiguous_review",
+      confidence: topScore >= 84 ? "medium" : "low",
+      reason:
+        "The query resolved to multiple same-city hotel candidates, so it behaves more like an area or clustered hotel search than a single exact property lookup.",
+      cluster_signal: clusterSignal,
+    };
+  }
+
+  if (secondScore >= 72) {
+    return {
+      detected_intent: "ambiguous",
+      recommended_route: "ambiguous_review",
+      confidence: "medium",
+      reason:
+        "Multiple hotel identities matched strongly enough that the shortlist should be reviewed before assuming one exact intended property.",
+      cluster_signal: clusterSignal,
+    };
+  }
+
+  return routeDecision;
+}
+
 function buildQueryResolution({
   source,
   query,
@@ -2302,6 +2419,15 @@ function buildQueryResolution({
   cityCandidates,
   hotelCandidates,
 }) {
+  const agentInterpretation =
+    routeDecision.recommended_route === "city_inventory"
+      ? "destination_inventory"
+      : routeDecision.recommended_route === "direct_hotel"
+        ? "single_hotel_lookup"
+        : routeDecision.recommended_route === "ambiguous_review"
+          ? "hotel_cluster_review"
+          : "no_match";
+
   return {
     source,
     input_query: query || cityName || null,
@@ -2309,11 +2435,15 @@ function buildQueryResolution({
     detected_intent: routeDecision.detected_intent,
     confidence: routeDecision.confidence,
     recommended_route: routeDecision.recommended_route,
+    agent_interpretation: agentInterpretation,
+    should_assume_single_hotel: routeDecision.recommended_route === "direct_hotel",
+    should_compare_multiple_hotels: routeDecision.recommended_route === "ambiguous_review",
     reason: routeDecision.reason,
     candidate_counts: {
       city_candidates: asArray(cityCandidates).length,
       hotel_candidates: asArray(hotelCandidates).length,
     },
+    cluster_signal: routeDecision.cluster_signal || buildHotelClusterSignal(hotelCandidates),
     top_city_candidate: cityCandidates[0] || null,
     top_hotel_candidate: hotelCandidates[0] || null,
   };
@@ -2475,9 +2605,13 @@ export async function searchHotels(api, db, params) {
       }
     );
   } else if (source === "city_name") {
-    const rawCityCandidates = await api.searchCitiesOnly(cityName);
-    cityCandidates = await buildCityCandidateRows(db, rawCityCandidates, cityName, candidateLimit);
-    resolvedCity = normalizeResolvedCityCandidate(selectBestCityCandidate(rawCityCandidates, cityName));
+    const [rawCityCandidates, suggest] = await Promise.all([
+      api.searchCitiesOnly(cityName).catch(() => []),
+      api.searchSuggest(cityName).catch(() => ({ cities: [], hotels: [] })),
+    ]);
+    const mergedCityCandidates = mergeCityCandidateSeeds(rawCityCandidates, suggest.cities);
+    cityCandidates = await buildCityCandidateRows(db, mergedCityCandidates, cityName, candidateLimit);
+    resolvedCity = normalizeResolvedCityCandidate(selectBestCityCandidate(mergedCityCandidates, cityName));
 
     if (!resolvedCity) {
       const routeDecision = {
@@ -2547,7 +2681,8 @@ export async function searchHotels(api, db, params) {
       api.searchSuggest(query),
     ]);
 
-    cityCandidates = await buildCityCandidateRows(db, rawCityCandidates, query, candidateLimit);
+    const mergedCityCandidates = mergeCityCandidateSeeds(rawCityCandidates, suggest.cities);
+    cityCandidates = await buildCityCandidateRows(db, mergedCityCandidates, query, candidateLimit);
     hotelSeedRows = buildHotelCandidateSeedRows(
       suggest.hotels,
       query,
@@ -2621,6 +2756,11 @@ export async function searchHotels(api, db, params) {
 
     await Promise.all(tasks);
     hotelCandidates = buildHotelCandidateRows(hotelSeedRows, directHotelSection, candidateLimit);
+    const refinedRouteDecision = refineSearchRouteDecision(routeDecision, {
+      source,
+      cityCandidates,
+      hotelCandidates,
+    });
 
     if (!topCityCandidate && !topHotelCandidate) {
       return buildAgenticToolResult({
@@ -2652,7 +2792,7 @@ export async function searchHotels(api, db, params) {
             query,
             cityId,
             cityName,
-            routeDecision,
+            routeDecision: refinedRouteDecision,
             cityCandidates,
             hotelCandidates,
           }),
@@ -2668,9 +2808,18 @@ export async function searchHotels(api, db, params) {
         },
       });
     }
+
+    if (refinedRouteDecision.recommended_route !== routeDecision.recommended_route) {
+      searchStrategy = `${searchStrategy || routeDecision.recommended_route}_refined`;
+    }
   }
 
-  const routeDecision = resolveSearchRoute({
+  const baseRouteDecision = resolveSearchRoute({
+    source,
+    cityCandidates,
+    hotelCandidates: hotelCandidates.length > 0 ? hotelCandidates : hotelSeedRows,
+  });
+  const routeDecision = refineSearchRouteDecision(baseRouteDecision, {
     source,
     cityCandidates,
     hotelCandidates: hotelCandidates.length > 0 ? hotelCandidates : hotelSeedRows,

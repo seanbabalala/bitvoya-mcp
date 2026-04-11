@@ -23,6 +23,10 @@ export async function runDiscoverySmoke() {
       query: "Shanghai Himalayas Hotel",
       limit: 3,
     });
+    const hotelSearchCluster = await searchHotels(api, db, {
+      query: "Shanghai Pudong",
+      limit: 3,
+    });
     const hotelRooms = await getHotelRooms(api, db, {
       hotel_id: "875",
       checkin: "2026-05-01",
@@ -57,17 +61,20 @@ export async function runDiscoverySmoke() {
       prefer_benefits: true,
     });
 
-    for (const payload of [hotelDetail, hotelSearchEnglish, hotelRooms, comparedHotels, comparedRates]) {
+    for (const payload of [hotelDetail, hotelSearchEnglish, hotelSearchCluster, hotelRooms, comparedHotels, comparedRates]) {
       agenticToolOutputSchema.parse(payload);
     }
 
     assert.equal(hotelDetail.status, "ok");
     assert.equal(hotelSearchEnglish.status, "ok");
+    assert.equal(hotelSearchCluster.status, "ok");
     assert.equal(hotelRooms.status, "ok");
     assert.equal(comparedHotels.status, "ok");
     assert.equal(comparedRates.status, "ok");
     assert.equal(hotelDetail.data?.found, true);
     assert.ok((hotelSearchEnglish.data?.results || []).length > 0);
+    assert.equal(hotelSearchCluster.data?.query_resolution?.recommended_route, "ambiguous_review");
+    assert.ok((hotelSearchCluster.data?.hotel_candidates || []).length >= 2);
     assert.equal(hotelRooms.data?.found, true);
     assert.ok((hotelRooms.data?.selection_guide?.top_recommendations || []).length > 0);
     assert.ok((comparedHotels.data?.ranked_hotels || []).length >= 2);
@@ -84,6 +91,11 @@ export async function runDiscoverySmoke() {
               hotel_name: hotelSearchEnglish.data.results[0].hotel_name,
             }
           : null,
+      },
+      search_hotels_cluster: {
+        summary: hotelSearchCluster.summary,
+        recommended_route: hotelSearchCluster.data?.query_resolution?.recommended_route,
+        cluster_signal: hotelSearchCluster.data?.query_resolution?.cluster_signal,
       },
       hotel_rooms: hotelRooms.data?.selection_guide?.recommended_rate
         ? {
