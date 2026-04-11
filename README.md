@@ -2,6 +2,24 @@
 
 API-first MCP server for Bitvoya luxury hotel discovery with `tripwiki_publish` grounding augmentation.
 
+## Live Deploy
+
+Use [DEPLOYMENT.md](/root/bitvoya_mcp/DEPLOYMENT.md) as the source of truth for live MCP release flow.
+
+Status:
+
+```bash
+cd /root/bitvoya_mcp
+npm run deploy:remote -- --status
+```
+
+Release:
+
+```bash
+cd /root/bitvoya_mcp
+npm run deploy:remote
+```
+
 Current scope:
 
 - live hotel search from existing Bitvoya APIs

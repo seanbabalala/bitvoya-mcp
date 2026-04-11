@@ -14,7 +14,7 @@
     "verify:agent-key": "node ./scripts/verify-agent-key.mjs",
     "create:handoff": "node ./scripts/create-handoff-session.mjs",
     "migrate:auth": "node ./scripts/migrate-auth-schema.mjs",
-    "deploy:remote": "bash ./scripts/deploy-remote-pm2.sh"
+    "deploy:remote": "bash ./scripts/release_live.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
