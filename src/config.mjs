@@ -80,6 +80,12 @@ export function loadConfig() {
       version: envValue(fileEnv, "BITVOYA_MCP_SERVER_VERSION", "0.2.0"),
       transport: envValue(fileEnv, "BITVOYA_MCP_TRANSPORT", "stdio"),
     },
+    http: {
+      host: envValue(fileEnv, "BITVOYA_MCP_HTTP_HOST", "127.0.0.1"),
+      port: intValue(fileEnv, "BITVOYA_MCP_HTTP_PORT", 3011),
+      path: envValue(fileEnv, "BITVOYA_MCP_HTTP_PATH", "/mcp"),
+      healthPath: envValue(fileEnv, "BITVOYA_MCP_HTTP_HEALTH_PATH", "/healthz"),
+    },
     db: primaryDb,
     authDb,
     api: {
@@ -95,6 +101,7 @@ export function loadConfig() {
       principalHeader: envValue(fileEnv, "BITVOYA_MCP_REMOTE_PRINCIPAL_HEADER", "x-bitvoya-principal"),
       signatureHeader: envValue(fileEnv, "BITVOYA_MCP_REMOTE_SIGNATURE_HEADER", "x-bitvoya-signature"),
       sharedSecret: envValue(fileEnv, "BITVOYA_MCP_REMOTE_AUTH_SHARED_SECRET", ""),
+      tokenPepper: envValue(fileEnv, "BITVOYA_MCP_TOKEN_PEPPER", ""),
       maxSkewSeconds: intValue(fileEnv, "BITVOYA_MCP_REMOTE_AUTH_MAX_SKEW_SECONDS", 300),
       requiredScopes: csvValue(fileEnv, "BITVOYA_MCP_REMOTE_REQUIRED_SCOPES"),
     },
@@ -149,6 +156,7 @@ export function summarizeConfig(config) {
   return {
     envPath: config.envPath,
     server: config.server,
+    http: config.http,
     db: {
       host: config.db.host,
       port: config.db.port,
@@ -170,7 +178,16 @@ export function summarizeConfig(config) {
       acceptLanguage: config.api.acceptLanguage,
       userAgent: config.api.userAgent,
     },
-    remoteAuth: config.remoteAuth,
+    remoteAuth: {
+      mode: config.remoteAuth.mode,
+      tokenHeader: config.remoteAuth.tokenHeader,
+      principalHeader: config.remoteAuth.principalHeader,
+      signatureHeader: config.remoteAuth.signatureHeader,
+      sharedSecretConfigured: Boolean(config.remoteAuth.sharedSecret),
+      tokenPepperConfigured: Boolean(config.remoteAuth.tokenPepper),
+      maxSkewSeconds: config.remoteAuth.maxSkewSeconds,
+      requiredScopes: config.remoteAuth.requiredScopes,
+    },
     bookingExecution: config.bookingExecution,
     handoff: {
       mode: config.handoff.mode,

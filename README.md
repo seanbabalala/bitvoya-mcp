@@ -44,7 +44,9 @@ Remote auth scaffolding in this repo now includes:
 
 - tool-to-scope policy catalog in [src/authz.mjs](/root/bitvoya_mcp/src/authz.mjs)
 - token generation / hashing helpers in [src/token-auth.mjs](/root/bitvoya_mcp/src/token-auth.mjs)
+- bearer token verification and auth audit helpers in [src/agent-auth.mjs](/root/bitvoya_mcp/src/agent-auth.mjs)
 - gateway-signed principal verification helpers in [src/remote-auth.mjs](/root/bitvoya_mcp/src/remote-auth.mjs)
+- stateless Streamable HTTP gateway runtime in [src/remote-server.mjs](/root/bitvoya_mcp/src/remote-server.mjs)
 - MySQL table scaffolding in [sql/001_mcp_auth_tables.sql](/root/bitvoya_mcp/sql/001_mcp_auth_tables.sql)
 - production auth design in [AUTH_MODEL.md](/root/bitvoya_mcp/AUTH_MODEL.md)
 - public secure-checkout handoff design in [SECURE_HANDOFF_DESIGN.md](/root/bitvoya_mcp/SECURE_HANDOFF_DESIGN.md)
@@ -92,6 +94,22 @@ For local stdio integrations, point the MCP client at:
 
 - command: `node`
 - args: `["/root/bitvoya_mcp/src/server.mjs"]`
+
+For remote/public MCP testing:
+
+```bash
+cd /root/bitvoya_mcp
+BITVOYA_MCP_TRANSPORT=streamable_http \
+BITVOYA_MCP_HTTP_HOST=127.0.0.1 \
+BITVOYA_MCP_HTTP_PORT=3011 \
+npm run start
+```
+
+- MCP endpoint: `http://127.0.0.1:3011/mcp`
+- health endpoint: `http://127.0.0.1:3011/healthz`
+- auth:
+  - `bearer` mode expects `Authorization: Bearer btk_live_...`
+  - `signed_principal` mode expects Bitvoya gateway-signed principal headers
 
 ## Smoke Scripts
 
@@ -216,6 +234,15 @@ Exception:
   - `data.secure_handoff`
 - `recommended_next_tools` is now the canonical way for an agent to continue the booking flow safely
 - in default `executor_handoff` mode, external agents should stop after `create_booking_intent`, surface `data.secure_handoff` to the traveler, and only inspect later status with `get_booking_state`
+
+## Public Gateway Notes
+
+- the repo now supports both `stdio` and remote `streamable_http` transport
+- remote requests are authenticated before MCP method handling begins
+- in `bearer` mode, Bitvoya `agent key` lookup resolves `user_id/account_id/token_id/scopes` from `mcp_agent_tokens`
+- runtime `quote`, `intent`, and stored `card_reference_id` records are now bound to the originating Bitvoya account
+- this means multiple keys under the same Bitvoya user still share account history, but keys cannot cross into another account's runtime booking state
+- if `mcp_auth_audit_events` has not been migrated yet, the gateway auto-disables audit writes and continues serving requests
 
 ## Submission And State
 

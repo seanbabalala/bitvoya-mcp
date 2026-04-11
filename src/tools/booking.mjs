@@ -20,6 +20,47 @@ function normalizeId(value) {
   return value === null || value === undefined || value === "" ? null : String(value);
 }
 
+function buildAccountBinding(options = {}) {
+  const principal = options?.request_principal;
+
+  if (!principal || typeof principal !== "object") {
+    return null;
+  }
+
+  const scopes = Array.isArray(principal.scopes)
+    ? principal.scopes.map((scope) => String(scope || "").trim()).filter(Boolean)
+    : [];
+
+  return {
+    user_id: normalizeId(principal.user_id),
+    account_id: normalizeId(principal.account_id),
+    token_id: normalizeId(principal.token_id),
+    token_type: normalizeId(principal.token_type),
+    actor_type: normalizeId(principal.actor_type),
+    scopes,
+  };
+}
+
+function mergeUserInfoWithAccountBinding(userInfo, accountBinding) {
+  const base =
+    userInfo && typeof userInfo === "object" && !Array.isArray(userInfo)
+      ? { ...userInfo }
+      : {};
+
+  if (!accountBinding) {
+    return Object.keys(base).length > 0 ? base : null;
+  }
+
+  return {
+    ...base,
+    ...(accountBinding.user_id ? { user_id: accountBinding.user_id } : {}),
+    ...(accountBinding.account_id ? { account_id: accountBinding.account_id } : {}),
+    ...(accountBinding.token_id ? { token_id: accountBinding.token_id } : {}),
+    ...(accountBinding.token_type ? { token_type: accountBinding.token_type } : {}),
+    ...(accountBinding.actor_type ? { actor_type: accountBinding.actor_type } : {}),
+  };
+}
+
 function detectCardType(number) {
   const clean = String(number || "").replace(/\D/g, "");
   if (/^4/.test(clean)) return { type: "visa", name: "Visa" };
@@ -1446,6 +1487,7 @@ function mapPaymentSessionType(intent) {
 
 export async function prepareBookingQuote(api, db, store, config, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
+  const accountBinding = buildAccountBinding(options);
   const hotelRoomsPayload = await getHotelRooms(api, db, {
     hotel_id: params.hotel_id,
     checkin: params.checkin,
@@ -1479,6 +1521,7 @@ export async function prepareBookingQuote(api, db, store, config, params, option
   const expiresAtMs = nowMs + config.store.quoteTtlSeconds * 1000;
 
   const quoteRecord = store.createQuote({
+    account_binding: accountBinding,
     hotel_id: String(params.hotel_id),
     room_id: String(params.room_id),
     rate_id: String(params.rate_id),
@@ -1619,6 +1662,7 @@ export async function prepareBookingQuote(api, db, store, config, params, option
 export async function createBookingIntent(store, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
   const quote = store.getQuote(params.quote_id);
+  const requestAccountBinding = buildAccountBinding(options);
 
   if (!quote) {
     throw new Error("Quote not found or already expired.");
@@ -1649,10 +1693,12 @@ export async function createBookingIntent(store, params, options = {}) {
     arrivalTime: params.arrival_time,
     specialRequests,
   });
+  const accountBinding = quote.account_binding || requestAccountBinding;
 
   const status = payment.requires_card_attachment ? "awaiting_card" : "ready_to_submit";
 
   const intentRecord = store.createIntent(normalizeIntentState({
+    account_binding: accountBinding,
     quote_id: quote.quote_id,
     status,
     payment_method: params.payment_method,
@@ -1661,7 +1707,7 @@ export async function createBookingIntent(store, params, options = {}) {
     amount_due_at_hotel_cny: payment.amount_due_at_hotel_cny,
     requires_card_attachment: payment.requires_card_attachment,
     next_actions: payment.next_actions,
-    user_info: params.user_info || null,
+    user_info: mergeUserInfoWithAccountBinding(params.user_info, accountBinding),
     quote_snapshot: buildQuoteSummary(quote),
     guest_snapshot: guestSnapshot,
     card_attachment: {
@@ -1714,6 +1760,7 @@ export async function createBookingIntent(store, params, options = {}) {
 export async function attachBookingCard(store, config, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
   const intent = store.getIntent(params.intent_id);
+  const requestAccountBinding = buildAccountBinding(options);
 
   if (!intent) {
     throw new Error("Booking intent not found.");
@@ -1731,6 +1778,17 @@ export async function attachBookingCard(store, config, params, options = {}) {
     if (!existing) {
       throw new Error("card_reference_id was not found.");
     }
+
+     const intentAccountId = normalizeId(intent?.account_binding?.account_id);
+     const existingAccountId = normalizeId(existing?.account_binding?.account_id);
+     if (intentAccountId && !existingAccountId) {
+      throw new Error("card_reference_id is not bound to a Bitvoya account.");
+    }
+
+    if (intentAccountId && existingAccountId && intentAccountId !== existingAccountId) {
+      throw new Error("card_reference_id belongs to a different Bitvoya account.");
+    }
+
     cardSummary = existing.summary;
   } else {
     const pan = String(params.pan || "").replace(/\D/g, "");
@@ -1763,6 +1821,7 @@ export async function attachBookingCard(store, config, params, options = {}) {
     });
 
     const cardRecord = store.createCard({
+      account_binding: intent.account_binding || requestAccountBinding,
       intent_id: intent.intent_id,
       storage_mode: "encrypted_runtime_store",
       encrypted_payload: encryptedPayload,
