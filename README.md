@@ -2,6 +2,28 @@
 
 API-first MCP server for Bitvoya luxury hotel discovery with `tripwiki_publish` grounding augmentation.
 
+## Public Onboarding
+
+GitHub should explain client-side setup. It is not where a traveler applies for credentials.
+
+Public connection flow:
+
+1. Sign in to your Bitvoya account at `https://bitvoya.com`
+2. Open Dashboard -> Connect Agent:
+   - `https://bitvoya.com/dashboard/agent-keys`
+3. Create a named agent connection
+4. Paste the hosted MCP values into your client:
+   - endpoint: `https://bitvoya.com/api/mcp`
+   - header: `Authorization: Bearer <your_agent_access_token>`
+5. Save the connection and test a discovery tool such as `search_hotels`
+
+Important:
+
+- Bitvoya calls this flow `Connect Agent` in the dashboard
+- under the hood, the generated credential is still a revocable per-agent bearer key
+- bookings, booking history, and membership stay bound to the same Bitvoya account
+- website login credentials and MCP credentials are not the same thing
+
 ## Live Deploy
 
 Use [DEPLOYMENT.md](/root/bitvoya_mcp/DEPLOYMENT.md) as the source of truth for live MCP release flow.
@@ -288,7 +310,7 @@ Exception:
 - configuration scaffolding for remote auth lives in [CONFIGURATION.md](/root/bitvoya_mcp/CONFIGURATION.md)
 - recommended remote pattern is:
   - website user logs in with Bitvoya account
-  - user creates MCP token in Bitvoya account settings
+  - user opens Dashboard -> Connect Agent and creates agent access
   - remote gateway validates bearer token and resolves unified principal
   - gateway forwards a signed principal envelope to the MCP runtime
   - MCP runtime enforces tool scopes and booking-mode boundaries

@@ -227,8 +227,8 @@ Public repository or public client compatibility does not imply open access.
 Production path:
 
 1. A Bitvoya user logs into the Bitvoya website.
-2. The user creates an agent key from dashboard settings.
-3. The external agent sends that key to the Bitvoya remote MCP gateway as a bearer token.
+2. The user opens Dashboard -> Connect Agent and creates an agent access credential.
+3. The external agent sends that credential to the Bitvoya remote MCP gateway as a bearer token.
 4. The gateway validates token hash, revocation, expiry, and account status.
 5. The gateway resolves the token to the canonical principal.
 6. The gateway forwards a signed principal envelope to the MCP runtime.
