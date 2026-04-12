@@ -106,6 +106,7 @@ Agents should present price fields carefully.
 ## Setup Guides
 
 - client setup: [docs/public/CLIENT_SETUP.md](/root/bitvoya_mcp/docs/public/CLIENT_SETUP.md)
+- frequently asked questions: [docs/public/FAQ.md](/root/bitvoya_mcp/docs/public/FAQ.md)
 - security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
 - secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
 
