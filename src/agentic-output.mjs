@@ -140,6 +140,15 @@ export function buildToolTextResult(payload) {
     lines.push(payload.summary);
   }
 
+  const agentBrief = payload?.data?.agent_brief;
+  const agentLines = Array.isArray(agentBrief?.presenter_lines)
+    ? agentBrief.presenter_lines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  if (agentLines.length > 0) {
+    lines.push("Agent read:");
+    lines.push(...agentLines.map((line) => `- ${line}`));
+  }
+
   const nextTools = Array.isArray(payload?.decision_support?.recommended_next_tools)
     ? payload.decision_support.recommended_next_tools
     : [];

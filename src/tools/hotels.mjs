@@ -1435,7 +1435,7 @@ function normalizeRoom(room, rateLimitPerRoom) {
     .sort(sortRatesByDisplayTotal);
 
   return {
-    room_id: normalizeId(room?.id),
+    room_id: normalizeId(firstNonEmpty(room?.id, normalizedRates[0]?.room_id)),
     hotel_id: normalizeId(firstNonEmpty(room?.hotelId, room?.hotel_id)),
     room_name: firstNonEmpty(room?.name),
     room_name_en: firstNonEmpty(room?.nameEn),
@@ -2042,6 +2042,352 @@ function buildHotelDecisionBrief(hotel, liveRateSummary = null, scoreBreakdown =
     best_for: bestFor.slice(0, 4),
     score: scoreBreakdown?.total_score ?? null,
     score_breakdown: scoreBreakdown,
+  };
+}
+
+function describeHotelAudienceTag(tag) {
+  switch (tag) {
+    case "luxury fit":
+      return "traveler is prioritizing luxury fit and brand-level positioning";
+    case "member-perk seekers":
+      return "traveler is perk-sensitive and cares about attached member value";
+    case "access-sensitive trips":
+      return "traveler needs a stronger transport and area logic";
+    case "commercially grounded shortlists":
+      return "traveler wants the recommendation tied to live commercial signals";
+    default:
+      return tag || null;
+  }
+}
+
+function buildAgentBriefPresenterLines({
+  recommendedOpening = null,
+  recommendedAngle = null,
+  sellThisWhen = [],
+  branches = [],
+  watchouts = [],
+  nextQuestion = null,
+} = {}) {
+  const lines = [];
+
+  if (recommendedOpening) {
+    lines.push(`Open with: ${compactText(recommendedOpening, 220)}`);
+  }
+
+  if (recommendedAngle) {
+    lines.push(`Angle: ${compactText(recommendedAngle, 220)}`);
+  }
+
+  if (asArray(sellThisWhen).length > 0) {
+    lines.push(`Use this when: ${asArray(sellThisWhen).slice(0, 3).map((item) => compactText(item, 120)).join(" | ")}`);
+  }
+
+  if (asArray(branches).length > 0) {
+    lines.push(`Decision split: ${asArray(branches).slice(0, 3).map((item) => compactText(item, 140)).join(" | ")}`);
+  }
+
+  if (asArray(watchouts).length > 0) {
+    lines.push(`Watchouts: ${asArray(watchouts).slice(0, 2).map((item) => compactText(item, 140)).join(" | ")}`);
+  }
+
+  if (nextQuestion) {
+    lines.push(`Ask next: ${compactText(nextQuestion, 180)}`);
+  }
+
+  return lines;
+}
+
+function buildSearchAgentBrief({
+  queryResolution = null,
+  results = [],
+  selectionGuide = null,
+  stayContext = null,
+} = {}) {
+  const topResult = asArray(results)[0] || null;
+  if (!topResult) {
+    return {
+      recommended_opening: "No clear hotel winner emerged yet, so pivot into clarification instead of pretending there is a recommendation.",
+      recommended_angle: "Use destination, date, or traveler-priority clarification before describing any property as a winner.",
+      next_question: stayContext
+        ? "Ask whether the traveler wants a different hotel, a different date range, or a destination-level shortlist."
+        : "Ask for dates or the traveler priority before trying to recommend one property.",
+      presenter_lines: buildAgentBriefPresenterLines({
+        recommendedOpening: "No clear hotel winner emerged yet, so pivot into clarification instead of pretending there is a recommendation.",
+        recommendedAngle: "Use destination, date, or traveler-priority clarification before describing any property as a winner.",
+        nextQuestion: stayContext
+          ? "Ask whether the traveler wants a different hotel, a different date range, or a destination-level shortlist."
+          : "Ask for dates or the traveler priority before trying to recommend one property.",
+      }),
+    };
+  }
+
+  const route = queryResolution?.recommended_route || "city_inventory";
+  const strongestBenefits = selectionGuide?.strongest_benefits || null;
+  const bestValue = selectionGuide?.best_value || null;
+  const branches = [];
+
+  if (strongestBenefits?.hotel_id && strongestBenefits.hotel_id !== topResult.hotel_id) {
+    branches.push(`If perks matter more than the overall winner, pivot to ${strongestBenefits.hotel_name}.`);
+  }
+
+  if (bestValue?.hotel_id && bestValue.hotel_id !== topResult.hotel_id) {
+    branches.push(`If price sensitivity appears, compare ${bestValue.hotel_name} before committing.`);
+  }
+
+  const recommendedOpening =
+    route === "direct_hotel"
+      ? `Treat this as a specific-property lookup. Lead with ${topResult.hotel_name} instead of expanding back into a city sweep.`
+      : route === "ambiguous_review"
+        ? `Do not dump the whole shortlist. Lead with ${topResult.hotel_name} as the current winner, then give one alternative by traveler priority.`
+        : `Start with ${topResult.hotel_name} as the current lead, not a flat inventory list.`;
+
+  const recommendedAngle = compactText(
+    firstNonEmpty(
+      topResult?.bitvoya_value_brief?.primary_angle,
+      topResult?.decision_brief?.choose_reasons?.[0],
+      topResult?.static_story?.positioning,
+      topResult?.location_brief?.headline
+    ),
+    180
+  );
+  const sellThisWhen = asArray(topResult?.decision_brief?.best_for).map(describeHotelAudienceTag).filter(Boolean);
+  const watchouts = asArray(topResult?.decision_brief?.tradeoffs).slice(0, 2);
+  const nextQuestion = stayContext
+    ? "Ask whether the traveler wants to optimize perks, flexibility, or lowest total before opening live rooms."
+    : "Ask for dates before talking about bookability or final payable totals.";
+
+  return {
+    mode: "hotel_search",
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    sell_this_when: sellThisWhen,
+    branches,
+    watchouts,
+    next_question: nextQuestion,
+    presenter_lines: buildAgentBriefPresenterLines({
+      recommendedOpening,
+      recommendedAngle,
+      sellThisWhen,
+      branches,
+      watchouts,
+      nextQuestion,
+    }),
+  };
+}
+
+function buildHotelDetailAgentBrief(hotel, decisionBrief = null) {
+  const recommendedOpening = `Present ${hotel?.hotel_name} as ${compactText(firstNonEmpty(hotel?.static_story?.positioning, hotel?.bitvoya_value_brief?.primary_angle), 170)}.`;
+  const recommendedAngle = compactText(
+    uniqueTexts(
+      [hotel?.benefit_brief?.headline, hotel?.location_brief?.headline, hotel?.nearby_pois_brief?.headline],
+      2
+    ).join(" "),
+    200
+  );
+  const sellThisWhen = asArray(decisionBrief?.best_for).map(describeHotelAudienceTag).filter(Boolean);
+  const branches = uniqueTexts(
+    [
+      hotel?.benefit_brief?.has_benefits
+        ? `If perk sensitivity is high, lead with ${asArray(hotel?.benefit_brief?.top_signals).slice(0, 3).join(", ")}.`
+        : null,
+      hotel?.location_brief?.transport_summary
+        ? "If access matters, pivot to the grounded transport story instead of generic amenities."
+        : null,
+      hotel?.nearby_pois_brief?.count
+        ? "If the traveler cares about what is around the hotel, use the nearby POI anchors as proof rather than vague neighborhood language."
+        : null,
+    ],
+    3
+  );
+  const watchouts = asArray(decisionBrief?.tradeoffs).slice(0, 2);
+  const nextQuestion = "Ask whether to open live rooms now or compare this against a different hotel style.";
+
+  return {
+    mode: "hotel_detail",
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    sell_this_when: sellThisWhen,
+    branches,
+    watchouts,
+    next_question: nextQuestion,
+    presenter_lines: buildAgentBriefPresenterLines({
+      recommendedOpening,
+      recommendedAngle,
+      sellThisWhen,
+      branches,
+      watchouts,
+      nextQuestion,
+    }),
+  };
+}
+
+function buildHotelRoomsAgentBrief({
+  hotel,
+  primaryRecommendation = null,
+  selectionGuide = null,
+  dateValidation = null,
+  roomCount = 0,
+} = {}) {
+  if (roomCount > 0 && primaryRecommendation) {
+    const displayTotal = firstNonEmpty(
+      primaryRecommendation?.pricing?.display_total_cny,
+      primaryRecommendation?.display_total_cny
+    );
+    const dueNow = firstNonEmpty(
+      primaryRecommendation?.lowest_due_now_cny,
+      getRateLowestDueNowCny({
+        payment_options: primaryRecommendation?.payment_options,
+        payment_scenarios: primaryRecommendation?.payment_scenarios,
+      })
+    );
+    const branches = uniqueTexts(
+      [
+        selectionGuide?.cheapest?.rate_id && selectionGuide.cheapest.rate_id !== primaryRecommendation.rate_id
+          ? `If pure lowest total matters, pivot to ${selectionGuide.cheapest.rate_name}.`
+          : null,
+        selectionGuide?.most_flexible?.rate_id && selectionGuide.most_flexible.rate_id !== primaryRecommendation.rate_id
+          ? `If flexibility matters, pivot to ${selectionGuide.most_flexible.rate_name}.`
+          : null,
+        selectionGuide?.best_benefits?.rate_id && selectionGuide.best_benefits.rate_id !== primaryRecommendation.rate_id
+          ? `If attached perks matter most, pivot to ${selectionGuide.best_benefits.rate_name}.`
+          : null,
+      ],
+      3
+    );
+    const recommendedOpening = `This stay is bookable now. Lead with ${primaryRecommendation.rate_name} on ${primaryRecommendation.room_name}.`;
+    const recommendedAngle = compactText(
+      uniqueTexts(
+        [
+          hotel?.benefit_brief?.headline,
+          `Quote ${displayTotal ?? "N/A"} CNY as the guest-facing display total.`,
+          dueNow !== null
+            ? `Due-now amount can be framed at ${dueNow} CNY when guarantee semantics apply.`
+            : null,
+        ],
+        2
+      ).join(" "),
+      220
+    );
+    const nextQuestion = "Ask whether the traveler wants lowest total, better flexibility, or the strongest attached perks before preparing a quote.";
+
+    return {
+      mode: "hotel_rooms_available",
+      booking_readiness: {
+        status: "bookable_now",
+        room_id: primaryRecommendation.room_id,
+        rate_id: primaryRecommendation.rate_id,
+      },
+      recommended_opening: recommendedOpening,
+      recommended_angle: recommendedAngle,
+      branches,
+      watchouts: asArray(primaryRecommendation?.tradeoffs).slice(0, 2),
+      next_question: nextQuestion,
+      presenter_lines: buildAgentBriefPresenterLines({
+        recommendedOpening,
+        recommendedAngle,
+        branches,
+        watchouts: asArray(primaryRecommendation?.tradeoffs).slice(0, 2),
+        nextQuestion,
+      }),
+    };
+  }
+
+  const recommendedOpening =
+    dateValidation?.status === "past_stay"
+      ? "Do not frame this as a true sellout. The requested stay window is already in the past relative to the server date."
+      : `No live rate came back for this stay window at ${hotel?.hotel_name}, but that is not the same as the hotel being useless to the traveler.`;
+  const recommendedAngle = compactText(
+    firstNonEmpty(
+      hotel?.bitvoya_value_brief?.primary_angle,
+      hotel?.static_story?.positioning,
+      hotel?.location_brief?.headline
+    ),
+    200
+  );
+  const branches = uniqueTexts(
+    [
+      dateValidation?.status === "past_stay"
+        ? "Ask for a future date range before drawing any inventory conclusion."
+        : "Retry nearby dates before declaring the property unavailable.",
+      "If the traveler is date-fixed, compare same-city alternatives rather than stopping at the first no-inventory result.",
+    ],
+    3
+  );
+  const nextQuestion =
+    dateValidation?.status === "past_stay"
+      ? "Ask for the correct future dates."
+      : "Ask whether to shift dates or pivot to alternatives in the same destination.";
+
+  return {
+    mode: "hotel_rooms_unavailable",
+    booking_readiness: {
+      status: dateValidation?.status === "past_stay" ? "needs_new_dates" : "needs_inventory_retry",
+    },
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    branches,
+    watchouts: [],
+    next_question: nextQuestion,
+    presenter_lines: buildAgentBriefPresenterLines({
+      recommendedOpening,
+      recommendedAngle,
+      branches,
+      nextQuestion,
+    }),
+  };
+}
+
+function buildCompareHotelsAgentBrief({
+  ranked = [],
+  cheapestLive = null,
+  bestBenefits = null,
+  appliedPreferences = null,
+  stayContext = null,
+} = {}) {
+  const topPick = asArray(ranked)[0] || null;
+  if (!topPick) {
+    return null;
+  }
+
+  const branches = [];
+  if (cheapestLive?.hotel?.hotel_id && cheapestLive.hotel.hotel_id !== topPick.hotel.hotel_id) {
+    branches.push(`If lowest live total matters, pivot to ${cheapestLive.hotel.hotel_name}.`);
+  }
+  if (bestBenefits?.hotel?.hotel_id && bestBenefits.hotel.hotel_id !== topPick.hotel.hotel_id) {
+    branches.push(`If benefits matter more than the weighted winner, pivot to ${bestBenefits.hotel.hotel_name}.`);
+  }
+
+  const recommendedOpening = `Do not read the ranking top-down. Lead with ${topPick.hotel.hotel_name} as the current ${appliedPreferences?.priority_profile || "balanced"} winner.`;
+  const recommendedAngle = compactText(
+    firstNonEmpty(
+      topPick.hotel?.bitvoya_value_brief?.primary_angle,
+      topPick.decision_brief?.choose_reasons?.[0],
+      topPick.hotel?.static_story?.positioning
+    ),
+    180
+  );
+  const sellThisWhen = asArray(topPick.decision_brief?.best_for).map(describeHotelAudienceTag).filter(Boolean);
+  const watchouts = asArray(topPick.decision_brief?.tradeoffs).slice(0, 2);
+  const nextQuestion = stayContext
+    ? "Ask which matters more now: perks, lowest payable total, or flexibility."
+    : "Ask for dates before turning this ranking into a booking recommendation.";
+
+  return {
+    mode: "hotel_comparison",
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    sell_this_when: sellThisWhen,
+    branches,
+    watchouts,
+    next_question: nextQuestion,
+    presenter_lines: buildAgentBriefPresenterLines({
+      recommendedOpening,
+      recommendedAngle,
+      sellThisWhen,
+      branches,
+      watchouts,
+      nextQuestion,
+    }),
   };
 }
 
@@ -3906,6 +4252,12 @@ export async function searchHotels(api, db, params) {
       : cityInventorySection?.count
         ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s). ${cityInventorySection.summary}`
         : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
+  const agentBrief = buildSearchAgentBrief({
+    queryResolution,
+    results: activeSection?.results || [],
+    selectionGuide: activeSection?.selection_guide || null,
+    stayContext,
+  });
 
   return buildAgenticToolResult({
     tool: "search_hotels",
@@ -4013,6 +4365,7 @@ export async function searchHotels(api, db, params) {
       applied_preferences: activeSection?.applied_preferences || null,
       comparison_method: activeSection?.comparison_method || null,
       selection_guide: activeSection?.selection_guide || null,
+      agent_brief: agentBrief,
       count: activeSection?.count || 0,
       total_matches: activeSection?.total_matches || 0,
       next_offset: activeSection?.next_offset || null,
@@ -4148,6 +4501,7 @@ export async function getHotelDetail(api, db, { hotel_id }) {
   };
   const hotelDetail = normalizeHotelDetailPayload(hotel);
   const decisionBrief = buildHotelDecisionBrief(enrichedHotel);
+  const agentBrief = buildHotelDetailAgentBrief(enrichedHotel, decisionBrief);
 
   return buildAgenticToolResult({
     tool: "get_hotel_detail",
@@ -4190,6 +4544,7 @@ export async function getHotelDetail(api, db, { hotel_id }) {
       location_brief: enrichedHotel.location_brief,
       nearby_pois_brief: nearbyPoisBrief,
       bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
+      agent_brief: agentBrief,
       grounding: groundingPayload?.data || groundingPayload,
       city_grounding_excerpt: cityId ? buildCityGroundingExcerpt(cityGroundingMap.get(cityId) || null) : null,
     },
@@ -4263,6 +4618,21 @@ export async function getHotelRooms(api, db, params, options = {}) {
       `The requested stay is in the past relative to the MCP server date ${dateValidation.server_today} (checkin ${params.checkin}, checkout ${params.checkout}).`
     );
   }
+
+  const agentBrief = buildHotelRoomsAgentBrief({
+    hotel: enrichedHotel,
+    primaryRecommendation,
+    selectionGuide: {
+      recommended_rate: summarizeRankedRateRow(primaryRecommendation),
+      cheapest: summarizeRateGuideEntry(selectionGuide.cheapest, "cheapest"),
+      most_flexible: summarizeRateGuideEntry(selectionGuide.most_flexible, "most_flexible"),
+      best_benefits: summarizeRateGuideEntry(selectionGuide.best_benefits, "best_benefits"),
+      best_guarantee: summarizeRateGuideEntry(selectionGuide.best_guarantee, "best_guarantee"),
+      best_prepay: summarizeRateGuideEntry(selectionGuide.best_prepay, "best_prepay"),
+    },
+    dateValidation,
+    roomCount: normalizedRooms.length,
+  });
 
   return buildAgenticToolResult({
     tool: "get_hotel_rooms",
@@ -4349,6 +4719,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
       location_brief: enrichedHotel.location_brief,
       nearby_pois_brief: nearbyPoisBrief,
       bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
+      agent_brief: agentBrief,
       applied_preferences: buildRoundedAppliedPreferences(rateRanking.applied_preferences),
       comparison_method: rateRanking.comparison_method,
       selection_guide: {
@@ -4572,6 +4943,14 @@ export async function compareHotels(api, db, params, options = {}) {
     assumptions.push("Some hotels could not return live inventory, so those rows rely more heavily on static context.");
   }
 
+  const agentBrief = buildCompareHotelsAgentBrief({
+    ranked,
+    cheapestLive,
+    bestBenefits,
+    appliedPreferences,
+    stayContext,
+  });
+
   return buildAgenticToolResult({
     tool: "compare_hotels",
     status,
@@ -4660,6 +5039,7 @@ export async function compareHotels(api, db, params, options = {}) {
             }
           : null,
       },
+      agent_brief: agentBrief,
       ranked_hotels: ranked.map((item, index) => ({
         rank: index + 1,
         ...item.comparison_row,

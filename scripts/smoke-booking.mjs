@@ -8,6 +8,7 @@ import { loadConfig } from "../src/config.mjs";
 import { createDb } from "../src/db.mjs";
 import { createRuntimeStore } from "../src/runtime-store.mjs";
 import { agenticToolOutputSchema } from "../src/agentic-output.mjs";
+import { getHotelRooms } from "../src/tools/hotels.mjs";
 import {
   attachBookingCard,
   createBookingIntent,
@@ -82,10 +83,32 @@ export async function runBookingSmoke() {
   const fakeApi = createFakeBookingApi();
 
   try {
+    const liveRooms = await getHotelRooms(api, db, {
+      hotel_id: "875",
+      checkin: "2026-05-01",
+      checkout: "2026-05-03",
+      adult_num: 2,
+      child_num: 0,
+      room_num: 1,
+      room_limit: 2,
+      rate_limit_per_room: 4,
+      priority_profile: "balanced",
+    });
+    assert.equal(liveRooms.status, "ok");
+
+    const recommendedRate =
+      liveRooms.data?.selection_guide?.recommended_rate ||
+      liveRooms.data?.selection_guide?.cheapest ||
+      liveRooms.data?.rooms?.[0]?.rates?.[0] ||
+      null;
+
+    assert.ok(recommendedRate?.room_id, "Smoke booking requires a live room_id.");
+    assert.ok(recommendedRate?.rate_id, "Smoke booking requires a live rate_id.");
+
     const quote = await prepareBookingQuote(api, db, store, config, {
       hotel_id: "875",
-      room_id: "0",
-      rate_id: "6993794",
+      room_id: String(recommendedRate.room_id),
+      rate_id: String(recommendedRate.rate_id),
       checkin: "2026-05-01",
       checkout: "2026-05-03",
       adult_num: 2,
