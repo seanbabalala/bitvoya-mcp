@@ -47,11 +47,36 @@ Recommended flow:
 8. In chat, test a tool-driven prompt such as:
    - `Search luxury hotels in Tokyo for next weekend and compare the best options.`
 
-If your Cherry Studio version supports JSON import, this shape is typically the easiest starting point:
+Important compatibility note:
+
+- Cherry Studio may reject the generic flat JSON examples that work in other MCP clients
+- for Cherry Studio, prefer `type: streamableHttp` plus `baseUrl`
+- some Cherry Studio versions also behave more reliably if `Authorization` is added manually after import rather than embedded inside the imported JSON
+
+Recommended Cherry Studio JSON import shape:
 
 ```json
 {
-  "name": "Bitvoya MCP",
+  "mcpServers": {
+    "bitvoya": {
+      "name": "Bitvoya MCP",
+      "type": "streamableHttp",
+      "description": "Bitvoya luxury hotel MCP",
+      "isActive": true,
+      "baseUrl": "https://bitvoya.com/api/mcp"
+    }
+  }
+}
+```
+
+After import, open the Bitvoya MCP entry and manually add:
+
+- `Authorization: Bearer <your_agent_key>`
+
+Do not assume this older generic shape will import correctly in Cherry Studio:
+
+```json
+{
   "type": "streamable_http",
   "url": "https://bitvoya.com/api/mcp",
   "headers": {
@@ -59,6 +84,8 @@ If your Cherry Studio version supports JSON import, this shape is typically the 
   }
 }
 ```
+
+That format may still work in some other MCP clients, but Cherry Studio users should prefer the wrapped `mcpServers` import above or manual form entry.
 
 ## Generic MCP Clients
 
@@ -108,6 +135,15 @@ Check:
 - MCP tool use is enabled in your client
 - the server is enabled in the current chat
 - your client supports remote MCP, not only local stdio MCP
+
+### Cherry Studio says the imported JSON is invalid
+
+Check:
+
+- you are using the wrapped `mcpServers` import shape shown in the Cherry Studio section
+- the server entry uses `type: streamableHttp`
+- the endpoint field is `baseUrl`, not `url`
+- you add `Authorization` manually after import if your Cherry Studio version ignores or rejects imported headers
 
 ### The client asks for command and args instead of URL
 

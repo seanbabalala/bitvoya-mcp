@@ -57,6 +57,8 @@ If you are testing the hosted endpoint manually rather than through an MCP clien
 
 Most MCP clients add that automatically.
 
+Cherry Studio users should not assume the generic example above is directly importable. Use the Cherry Studio-specific setup in [docs/public/CLIENT_SETUP.md](docs/public/CLIENT_SETUP.md), especially the wrapped JSON import format plus manual `Authorization` header entry.
+
 ## What Agents Can Do
 
 Bitvoya MCP is designed for agentic travel discovery and booking preparation.
