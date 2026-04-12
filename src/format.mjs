@@ -29,6 +29,16 @@ export function asNullableNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function roundNullableNumber(value, digits = 2) {
+  const numeric = asNullableNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+
+  const precision = Number.isInteger(digits) && digits >= 0 ? digits : 2;
+  return Number(numeric.toFixed(precision));
+}
+
 export function compactText(value, maxLength = 280) {
   if (typeof value !== "string") return null;
 

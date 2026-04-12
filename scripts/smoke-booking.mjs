@@ -104,6 +104,24 @@ export async function runBookingSmoke() {
 
     assert.ok(recommendedRate?.room_id, "Smoke booking requires a live room_id.");
     assert.ok(recommendedRate?.rate_id, "Smoke booking requires a live rate_id.");
+    assert.notEqual(String(recommendedRate.room_id), "0", "Live room_id should not leak placeholder value 0.");
+
+    const staleSelection = await prepareBookingQuote(api, db, store, config, {
+      hotel_id: "875",
+      room_id: "legacy_room_id",
+      rate_id: "legacy_rate_id",
+      checkin: "2026-05-01",
+      checkout: "2026-05-03",
+      adult_num: 2,
+      child_num: 0,
+      room_num: 1,
+    });
+
+    assert.equal(staleSelection.status, "partial");
+    assert.ok(
+      Array.isArray(staleSelection.data?.valid_live_selections) && staleSelection.data.valid_live_selections.length > 0,
+      "Stale quote selection should return current live alternatives."
+    );
 
     const quote = await prepareBookingQuote(api, db, store, config, {
       hotel_id: "875",
@@ -180,6 +198,10 @@ export async function runBookingSmoke() {
     assert.equal(refreshed.data?.execution_state?.lifecycle_state?.order_state, "confirmed");
 
     const result = {
+      stale_prepare_booking_quote: {
+        summary: staleSelection.summary,
+        first_live_option: staleSelection.data?.valid_live_selections?.[0] || null,
+      },
       prepare_booking_quote: quote.summary,
       create_booking_intent: {
         summary: intent.summary,

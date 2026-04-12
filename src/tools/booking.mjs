@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getHotelRooms } from "./hotels.mjs";
 import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
-import { asNullableNumber, compactText, firstNonEmpty } from "../format.mjs";
+import { asArray, asNullableNumber, compactText, firstNonEmpty, roundNullableNumber } from "../format.mjs";
 import { buildIntentSecureHandoff, buildQuoteSecureHandoff } from "../handoff.mjs";
 
 const INTERNAL_EXECUTION_MODE = "internal_execution";
@@ -395,6 +395,141 @@ function buildQuoteSummary(quote) {
     hotel_snapshot: quote.hotel_snapshot,
     room_snapshot: quote.room_snapshot,
     rate_snapshot: quote.rate_snapshot,
+  };
+}
+
+function roundMoney(value) {
+  return roundNullableNumber(value, 2);
+}
+
+function formatMoneyLabel(value, currency = "CNY") {
+  const rounded = roundMoney(value);
+  if (rounded === null) {
+    return null;
+  }
+
+  return `${rounded} ${currency || "CNY"}`;
+}
+
+function rateMatchesRequestedId(rate, requestedRateId) {
+  const requestedId = normalizeId(requestedRateId);
+  if (!requestedId) {
+    return false;
+  }
+
+  return [rate?.rate_id, rate?.supplier_rate_id].some((value) => normalizeId(value) === requestedId);
+}
+
+function roomMatchesRequestedId(room, requestedRoomId) {
+  const requestedId = normalizeId(requestedRoomId);
+  if (!requestedId) {
+    return false;
+  }
+
+  return (
+    normalizeId(room?.room_id) === requestedId ||
+    asArray(room?.rates).some((rate) => normalizeId(rate?.room_id) === requestedId)
+  );
+}
+
+function buildLiveSelectionCandidates(rooms, { room_limit = 3, rate_limit_per_room = 2 } = {}) {
+  return asArray(rooms)
+    .slice(0, room_limit)
+    .map((room) => ({
+      room_id: normalizeId(room?.room_id),
+      room_name: firstNonEmpty(room?.room_name, room?.room_name_en),
+      room_name_en: firstNonEmpty(room?.room_name_en),
+      cheapest_display_total_cny: roundMoney(room?.cheapest_display_total_cny),
+      total_rate_options: asArray(room?.rates).length,
+      rates: asArray(room?.rates)
+        .slice(0, rate_limit_per_room)
+        .map((rate) => ({
+          room_id: normalizeId(rate?.room_id),
+          rate_id: normalizeId(rate?.rate_id),
+          supplier_rate_id: normalizeId(rate?.supplier_rate_id),
+          rate_name: firstNonEmpty(rate?.rate_name, rate?.rate_name_en),
+          rate_name_en: firstNonEmpty(rate?.rate_name_en),
+          display_total_cny: roundMoney(rate?.pricing?.display_total_cny),
+          service_fee_cny: roundMoney(rate?.pricing?.service_fee_cny),
+          free_cancel_until: firstNonEmpty(rate?.cancellation?.free_cancel_until),
+          payment_options: rate?.payment_options || null,
+        })),
+    }));
+}
+
+function resolveRequestedLiveSelection(rooms, params) {
+  const requestedRoomId = normalizeId(params?.room_id);
+  const requestedRateId = normalizeId(params?.rate_id);
+  const flattenedRates = asArray(rooms).flatMap((room) =>
+    asArray(room?.rates).map((rate) => ({
+      room,
+      rate,
+    }))
+  );
+  const exactRoomMatches = requestedRoomId
+    ? asArray(rooms).filter((room) => normalizeId(room?.room_id) === requestedRoomId)
+    : [];
+  const roomMatches = requestedRoomId
+    ? asArray(rooms).filter((room) => roomMatchesRequestedId(room, requestedRoomId))
+    : [];
+  const rateMatches = requestedRateId
+    ? flattenedRates.filter((entry) => rateMatchesRequestedId(entry?.rate, requestedRateId))
+    : [];
+
+  let selectedRoom = null;
+  let selectedRate = null;
+  let matchStrategy = null;
+
+  if (roomMatches.length === 1) {
+    selectedRoom = roomMatches[0];
+    selectedRate = asArray(selectedRoom?.rates).find((rate) => rateMatchesRequestedId(rate, requestedRateId)) || null;
+    if (selectedRate) {
+      matchStrategy =
+        exactRoomMatches.length === 1 ? "room_and_rate_exact" : "room_recovered_rate_exact";
+    }
+  }
+
+  if (!selectedRate && rateMatches.length === 1) {
+    selectedRoom = rateMatches[0].room;
+    selectedRate = rateMatches[0].rate;
+    matchStrategy = "rate_exact_global";
+  }
+
+  return {
+    requested_room_id: requestedRoomId,
+    requested_rate_id: requestedRateId,
+    selected_room: selectedRoom,
+    selected_rate: selectedRate,
+    match_strategy: matchStrategy,
+    room_match_status:
+      !requestedRoomId
+        ? "unspecified"
+        : exactRoomMatches.length === 1
+          ? "exact"
+          : roomMatches.length === 1
+            ? "matched_via_rate_room_id"
+            : roomMatches.length > 1
+              ? "ambiguous"
+              : "not_found",
+    rate_match_status:
+      !requestedRateId
+        ? "unspecified"
+        : rateMatches.length === 1
+          ? "exact"
+          : rateMatches.length > 1
+            ? "ambiguous"
+            : "not_found",
+    room_match_candidates: roomMatches.slice(0, 3).map((room) => ({
+      room_id: normalizeId(room?.room_id),
+      room_name: firstNonEmpty(room?.room_name, room?.room_name_en),
+    })),
+    rate_match_candidates: rateMatches.slice(0, 3).map((entry) => ({
+      room_id: normalizeId(entry?.room?.room_id),
+      room_name: firstNonEmpty(entry?.room?.room_name, entry?.room?.room_name_en),
+      rate_id: normalizeId(entry?.rate?.rate_id),
+      supplier_rate_id: normalizeId(entry?.rate?.supplier_rate_id),
+      rate_name: firstNonEmpty(entry?.rate?.rate_name, entry?.rate?.rate_name_en),
+    })),
   };
 }
 
@@ -1532,6 +1667,8 @@ export async function prepareBookingQuote(api, db, store, config, params, option
   const accountBinding = buildAccountBinding(options);
   const hotelRoomsPayload = await getHotelRooms(api, db, {
     hotel_id: params.hotel_id,
+    hotel_name: params.hotel_name || null,
+    city_name: params.city_name || null,
     checkin: params.checkin,
     checkout: params.checkout,
     adult_num: params.adult_num,
@@ -1542,21 +1679,216 @@ export async function prepareBookingQuote(api, db, store, config, params, option
   }, options);
 
   const roomsData = hotelRoomsPayload?.data || hotelRoomsPayload;
+  const normalizedRooms = asArray(roomsData?.rooms);
+  const identityResolution = roomsData?.identity_resolution || null;
+  const liveSelectionCandidates = buildLiveSelectionCandidates(normalizedRooms);
+  const topLiveSelection = liveSelectionCandidates[0] || null;
+  const topLiveRate = topLiveSelection?.rates?.[0] || null;
+  const displayTotalLabel = formatMoneyLabel(topLiveRate?.display_total_cny, "CNY");
 
-  const selectedRoom = (roomsData?.rooms || []).find(
-    (room) => String(room.room_id) === String(params.room_id)
-  );
-
-  if (!selectedRoom) {
-    throw new Error("Requested room_id was not found in the current live inventory.");
+  if (normalizedRooms.length === 0) {
+    return buildAgenticToolResult({
+      tool: "prepare_booking_quote",
+      status: hotelRoomsPayload?.status === "not_found" ? "not_found" : "partial",
+      intent: "booking_quote_confirmation",
+      summary:
+        `Could not freeze a booking quote. ${hotelRoomsPayload?.summary || "Live room inventory could not be validated for this selection."}`,
+      recommended_next_tools:
+        hotelRoomsPayload?.decision_support?.recommended_next_tools || [
+          buildNextTool("get_hotel_rooms", "Reload live room inventory before retrying quote creation.", [
+            "hotel_id",
+            "checkin",
+            "checkout",
+          ]),
+        ],
+      warnings: hotelRoomsPayload?.decision_support?.warnings || [],
+      pricing_notes: hotelRoomsPayload?.decision_support?.pricing_notes || [
+        "display_total_cny is only trustworthy after live room inventory is loaded.",
+      ],
+      selection_hints: [
+        "Do not freeze a quote until get_hotel_rooms returns current bookable room_id and rate_id values.",
+        ...(hotelRoomsPayload?.decision_support?.selection_hints || []),
+      ],
+      entity_refs: hotelRoomsPayload?.entity_refs || {
+        hotel_ids: [normalizeId(roomsData?.hotel?.hotel_id) || normalizeId(params.hotel_id)],
+      },
+      data: {
+        found: false,
+        quote_preparable: false,
+        inventory_status: roomsData?.inventory_status || null,
+        hotel: roomsData?.hotel || null,
+        stay: roomsData?.stay || {
+          checkin: params.checkin,
+          checkout: params.checkout,
+          adult_num: params.adult_num,
+          child_num: params.child_num || 0,
+          room_num: params.room_num || 1,
+        },
+        requested_selection: {
+          hotel_id: normalizeId(params.hotel_id),
+          hotel_name: firstNonEmpty(params.hotel_name),
+          city_name: firstNonEmpty(params.city_name),
+          room_id: normalizeId(params.room_id),
+          rate_id: normalizeId(params.rate_id),
+        },
+        identity_resolution: identityResolution,
+        upstream_room_lookup: {
+          status: hotelRoomsPayload?.status || null,
+          summary: hotelRoomsPayload?.summary || null,
+        },
+      },
+    });
   }
 
-  const selectedRate = selectedRoom.rates.find(
-    (rate) => String(rate.rate_id) === String(params.rate_id)
+  const selectionResolution = resolveRequestedLiveSelection(normalizedRooms, params);
+  const selectedRoom = selectionResolution.selected_room;
+  const selectedRate = selectionResolution.selected_rate;
+  const selectionRecovered = Boolean(
+    selectedRoom && selectedRate && selectionResolution.match_strategy !== "room_and_rate_exact"
   );
 
-  if (!selectedRate) {
-    throw new Error("Requested rate_id was not found for the selected room in the current live inventory.");
+  if (!selectedRoom || !selectedRate) {
+    const mismatchWarnings = [];
+
+    if (identityResolution?.resolution_status === "remapped") {
+      mismatchWarnings.push(
+        `Requested hotel_id ${params.hotel_id} remapped to canonical live hotel_id ${roomsData?.hotel?.hotel_id}.`
+      );
+    }
+
+    if (selectionResolution.room_match_status === "not_found") {
+      mismatchWarnings.push(
+        `Requested room_id ${selectionResolution.requested_room_id || params.room_id} was not found in the current live inventory.`
+      );
+    } else if (selectionResolution.room_match_status === "ambiguous") {
+      mismatchWarnings.push(
+        `Requested room_id ${selectionResolution.requested_room_id || params.room_id} matched more than one current live room and cannot be trusted.`
+      );
+    }
+
+    if (selectionResolution.rate_match_status === "not_found") {
+      mismatchWarnings.push(
+        `Requested rate_id ${selectionResolution.requested_rate_id || params.rate_id} was not found in the current live inventory.`
+      );
+    } else if (selectionResolution.rate_match_status === "ambiguous") {
+      mismatchWarnings.push(
+        `Requested rate_id ${selectionResolution.requested_rate_id || params.rate_id} matched more than one current live rate and cannot be trusted.`
+      );
+    }
+
+    const presenterLines = [
+      "Open with: This hotel is bookable now, but the requested room_id / rate_id are not current live inventory ids.",
+      identityResolution?.resolution_status === "remapped"
+        ? `Angle: Requested hotel_id ${params.hotel_id} remapped to canonical live hotel_id ${roomsData?.hotel?.hotel_id} before live selection validation.`
+        : "Angle: The incoming ids likely came from a frontend page or foreign system rather than current Bitvoya live inventory.",
+      topLiveSelection && topLiveRate
+        ? `Decision split: Retry quote freeze with current live room_id ${topLiveSelection.room_id} and rate_id ${topLiveRate.rate_id}, or open compare_rates if the traveler still needs tradeoff analysis.`
+        : "Decision split: Re-open current live inventory and choose one returned room_id / rate_id pair before retrying.",
+      "Ask next: Confirm which current live room/rate should be frozen into a quote.",
+    ].filter(Boolean);
+
+    return buildAgenticToolResult({
+      tool: "prepare_booking_quote",
+      status: "partial",
+      intent: "booking_quote_confirmation",
+      summary:
+        `Live inventory is available for ${roomsData?.hotel?.hotel_name || "this hotel"},` +
+        (identityResolution?.resolution_status === "remapped"
+          ? ` and canonical live hotel_id recovered as ${roomsData?.hotel?.hotel_id}.`
+          : "") +
+        ` Requested room_id ${params.room_id} / rate_id ${params.rate_id} do not match current live ids.` +
+        (topLiveSelection && topLiveRate
+          ? ` Top current bookable option is ${topLiveSelection.room_name} / ${topLiveRate.rate_name}` +
+            (displayTotalLabel ? ` at ${displayTotalLabel}.` : ".")
+          : " Re-open live inventory and choose a current room/rate pair before retrying."),
+      recommended_next_tools: [
+        buildNextTool("compare_rates", "Inspect the current live rate tradeoffs before choosing a replacement rate.", [
+          "hotel_id",
+          "checkin",
+          "checkout",
+        ]),
+        buildNextTool("prepare_booking_quote", "Retry quote freeze with a current live room_id + rate_id pair.", [
+          "hotel_id",
+          "room_id",
+          "rate_id",
+          "checkin",
+          "checkout",
+        ]),
+        buildNextTool("get_hotel_rooms", "Re-open live inventory if the traveler needs the full room/rate list again.", [
+          "hotel_id",
+          "checkin",
+          "checkout",
+        ]),
+      ],
+      warnings: mismatchWarnings,
+      pricing_notes: [
+        "display_total_cny is only meaningful for current live room_id + rate_id pairs.",
+        "Do not reuse frontend or foreign-system ids once canonical live inventory has been loaded.",
+      ],
+      selection_hints: [
+        "Retry prepare_booking_quote with one of valid_live_selections[].room_id plus valid_live_selections[].rates[].rate_id.",
+        "Use compare_rates if the traveler wants lowest total, strongest perks, or best flexibility before locking.",
+      ],
+      entity_refs: {
+        hotel_ids: [normalizeId(roomsData?.hotel?.hotel_id) || normalizeId(params.hotel_id)],
+        city_ids: [normalizeId(roomsData?.hotel?.city?.source_city_id)],
+        room_ids: liveSelectionCandidates.map((room) => room.room_id),
+        rate_ids: liveSelectionCandidates.flatMap((room) => asArray(room?.rates).map((rate) => rate.rate_id)),
+        tripwiki_hotel_ids: [normalizeId(roomsData?.hotel?.grounding_excerpt?.tripwiki_hotel_id)],
+        tripwiki_city_ids: [normalizeId(roomsData?.hotel?.city_grounding_excerpt?.tripwiki_city_id)],
+      },
+      data: {
+        found: false,
+        quote_preparable: false,
+        hotel: roomsData?.hotel || null,
+        stay: roomsData?.stay || null,
+        identity_resolution: identityResolution,
+        requested_selection: {
+          hotel_id: normalizeId(params.hotel_id),
+          hotel_name: firstNonEmpty(params.hotel_name),
+          city_name: firstNonEmpty(params.city_name),
+          room_id: selectionResolution.requested_room_id,
+          rate_id: selectionResolution.requested_rate_id,
+        },
+        selection_resolution: {
+          requested_room_id: selectionResolution.requested_room_id,
+          requested_rate_id: selectionResolution.requested_rate_id,
+          match_strategy: selectionResolution.match_strategy,
+          room_match_status: selectionResolution.room_match_status,
+          rate_match_status: selectionResolution.rate_match_status,
+          room_match_candidates: selectionResolution.room_match_candidates,
+          rate_match_candidates: selectionResolution.rate_match_candidates,
+          matched_room: selectedRoom
+            ? {
+                room_id: normalizeId(selectedRoom.room_id),
+                room_name: firstNonEmpty(selectedRoom.room_name, selectedRoom.room_name_en),
+              }
+            : null,
+          matched_rate: selectedRate
+            ? {
+                rate_id: normalizeId(selectedRate.rate_id),
+                supplier_rate_id: normalizeId(selectedRate.supplier_rate_id),
+                rate_name: firstNonEmpty(selectedRate.rate_name, selectedRate.rate_name_en),
+              }
+            : null,
+        },
+        selection_guide: roomsData?.selection_guide || null,
+        valid_live_selections: liveSelectionCandidates,
+        agent_brief: {
+          mode: "booking_quote_selection_stale",
+          booking_readiness: {
+            status: "needs_current_live_ids",
+          },
+          recommended_opening: "This hotel is bookable now, but the requested room_id / rate_id are not current live inventory ids.",
+          recommended_angle:
+            identityResolution?.resolution_status === "remapped"
+              ? `Requested hotel_id ${params.hotel_id} remapped to canonical live hotel_id ${roomsData?.hotel?.hotel_id} before live selection validation.`
+              : "The incoming selection ids likely came from a frontend page or foreign system rather than current Bitvoya live inventory.",
+          next_question: "Confirm which current live room/rate should be frozen into a quote.",
+          presenter_lines: presenterLines,
+        },
+      },
+    });
   }
 
   const nowMs = Date.now();
@@ -1564,9 +1896,9 @@ export async function prepareBookingQuote(api, db, store, config, params, option
 
   const quoteRecord = store.createQuote({
     account_binding: accountBinding,
-    hotel_id: String(params.hotel_id),
-    room_id: String(params.room_id),
-    rate_id: String(params.rate_id),
+    hotel_id: String(roomsData?.hotel?.hotel_id || params.hotel_id),
+    room_id: String(selectedRoom.room_id),
+    rate_id: String(selectedRate.rate_id),
     created_at_ms: nowMs,
     expires_at_ms: expiresAtMs,
     expires_at: new Date(expiresAtMs).toISOString(),
@@ -1619,8 +1951,19 @@ export async function prepareBookingQuote(api, db, store, config, params, option
       hotel_found: true,
       room_found: true,
       rate_found: true,
+      canonical_hotel_id_recovered: identityResolution?.resolution_status === "remapped",
+      selection_recovered_from_stale_input: selectionRecovered,
       price_semantics_normalized: true,
       quote_expires: true,
+    },
+    selection_resolution: {
+      requested_hotel_id: normalizeId(params.hotel_id),
+      requested_room_id: normalizeId(params.room_id),
+      requested_rate_id: normalizeId(params.rate_id),
+      canonical_hotel_id: normalizeId(roomsData?.hotel?.hotel_id) || normalizeId(params.hotel_id),
+      canonical_room_id: normalizeId(selectedRoom.room_id),
+      canonical_rate_id: normalizeId(selectedRate.rate_id),
+      match_strategy: selectionResolution.match_strategy,
     },
   });
 
@@ -1658,8 +2001,24 @@ export async function prepareBookingQuote(api, db, store, config, params, option
     intent: "booking_quote_confirmation",
     summary:
       `Prepared quote ${quoteRecord.quote_id} for ${quoteRecord.hotel_snapshot.hotel_name} / ${quoteRecord.room_snapshot.room_name} / ${quoteRecord.rate_snapshot.rate_name}. ` +
-      `Quote expires at ${quoteRecord.expires_at}. Guest-facing display total is ${quoteRecord.pricing.display_total_cny} ${quoteRecord.pricing.currency}.`,
+      (identityResolution?.resolution_status === "remapped"
+        ? `Canonical live hotel_id recovered as ${quoteRecord.hotel_snapshot.hotel_id}. `
+        : "") +
+      (selectionRecovered
+        ? "Recovered the selected room/rate from current live inventory despite stale input ids. "
+        : "") +
+      `Quote expires at ${quoteRecord.expires_at}. Guest-facing display total is ${formatMoneyLabel(quoteRecord.pricing.display_total_cny, quoteRecord.pricing.currency) || `${quoteRecord.pricing.display_total_cny} ${quoteRecord.pricing.currency}`}.`,
     recommended_next_tools: recommendedNextTools,
+    warnings: [
+      ...(identityResolution?.resolution_status === "remapped"
+        ? [`Requested hotel_id ${params.hotel_id} was normalized to canonical live hotel_id ${quoteRecord.hotel_snapshot.hotel_id}.`]
+        : []),
+      ...(selectionRecovered
+        ? [
+            `Requested room_id ${params.room_id} / rate_id ${params.rate_id} were normalized to current live room_id ${quoteRecord.room_snapshot.room_id} / rate_id ${quoteRecord.rate_snapshot.rate_id}.`,
+          ]
+        : []),
+    ],
     pricing_notes: [
       "display_total_cny remains the guest-facing total aligned with current frontend checkout semantics.",
       "supplier_total_cny and service_fee_cny remain explicit so prepay vs guarantee can be reasoned about safely.",

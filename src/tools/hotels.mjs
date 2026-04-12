@@ -7,6 +7,7 @@ import {
   firstNonEmpty,
   normalizeSearchText,
   parseJsonField,
+  roundNullableNumber,
   uniqueBy,
 } from "../format.mjs";
 import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
@@ -17,6 +18,15 @@ function toPlaceholders(count) {
 
 function normalizeId(value) {
   return value === null || value === undefined || value === "" ? null : String(value);
+}
+
+function normalizeLiveInventoryId(value) {
+  const normalized = normalizeId(value);
+  if (normalized === null) {
+    return null;
+  }
+
+  return normalized === "0" ? null : normalized;
 }
 
 function normalizeImageUrl(value) {
@@ -1360,15 +1370,15 @@ function sortRatesByDisplayTotal(a, b) {
 }
 
 function normalizeRate(rate) {
-  const supplierTotal = asNullableNumber(firstNonEmpty(rate?.totalPriceCny, rate?.totalPrice));
-  const taxTotal = asNullableNumber(firstNonEmpty(rate?.taxPriceCny, rate?.taxPrice));
-  const displayTotal = asNullableNumber(firstNonEmpty(rate?.total_with_service_fee, supplierTotal));
-  const explicitServiceFee = asNullableNumber(rate?.service_fee?.amount);
+  const supplierTotal = roundNullableNumber(firstNonEmpty(rate?.totalPriceCny, rate?.totalPrice));
+  const taxTotal = roundNullableNumber(firstNonEmpty(rate?.taxPriceCny, rate?.taxPrice));
+  const displayTotal = roundNullableNumber(firstNonEmpty(rate?.total_with_service_fee, supplierTotal));
+  const explicitServiceFee = roundNullableNumber(rate?.service_fee?.amount);
   const derivedServiceFee =
     explicitServiceFee !== null
       ? explicitServiceFee
       : supplierTotal !== null && displayTotal !== null
-        ? Math.max(0, displayTotal - supplierTotal)
+        ? roundNullableNumber(Math.max(0, displayTotal - supplierTotal))
         : null;
 
   const prepaySupported = asBoolean(rate?.paymentType?.allowPayAll);
@@ -1394,7 +1404,7 @@ function normalizeRate(rate) {
     },
     cancellation: {
       free_cancel_until: firstNonEmpty(rate?.cancelPolicy?.cancelTime),
-      penalty_cny: asNullableNumber(rate?.cancelPolicy?.penalty),
+      penalty_cny: roundNullableNumber(rate?.cancelPolicy?.penalty),
       penalty_currency: firstNonEmpty(rate?.cancelPolicy?.unit),
       timezone: firstNonEmpty(rate?.cancelPolicy?.utc),
     },
@@ -1413,7 +1423,7 @@ function normalizeRate(rate) {
       },
       guarantee: {
         supported: guaranteeSupported,
-        estimated_service_fee_due_now_cny: guaranteeSupported ? derivedServiceFee || 0 : null,
+        estimated_service_fee_due_now_cny: guaranteeSupported ? roundNullableNumber(derivedServiceFee || 0) : null,
         estimated_due_at_hotel_cny: guaranteeSupported ? supplierTotal : null,
         note: guaranteeSupported
           ? derivedServiceFee && derivedServiceFee > 0
@@ -1433,9 +1443,14 @@ function normalizeRoom(room, rateLimitPerRoom) {
   const normalizedRates = asArray(room?.hotelRoomDetails)
     .map(normalizeRate)
     .sort(sortRatesByDisplayTotal);
+  const normalizedRoomId =
+    firstNonEmpty(
+      normalizeLiveInventoryId(room?.id),
+      ...normalizedRates.map((rate) => normalizeLiveInventoryId(rate?.room_id))
+    ) || normalizeId(firstNonEmpty(room?.id, normalizedRates[0]?.room_id));
 
   return {
-    room_id: normalizeId(firstNonEmpty(room?.id, normalizedRates[0]?.room_id)),
+    room_id: normalizedRoomId,
     hotel_id: normalizeId(firstNonEmpty(room?.hotelId, room?.hotel_id)),
     room_name: firstNonEmpty(room?.name),
     room_name_en: firstNonEmpty(room?.nameEn),

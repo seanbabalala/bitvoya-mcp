@@ -761,6 +761,8 @@ server.registerTool(
     },
     inputSchema: {
       hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
+      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for recovering canonical live hotel id."),
+      city_name: z.string().min(1).optional().describe("Optional city name hint paired with hotel_name for identity recovery."),
       room_id: z.string().min(1).describe("Selected room id."),
       rate_id: z.string().min(1).describe("Selected rate id from get_hotel_rooms."),
       checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
@@ -770,9 +772,11 @@ server.registerTool(
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
     },
   },
-  async ({ hotel_id, room_id, rate_id, checkin, checkout, adult_num, child_num, room_num }, extra) => {
+  async ({ hotel_id, hotel_name, city_name, room_id, rate_id, checkin, checkout, adult_num, child_num, room_num }, extra) => {
     const payload = await prepareBookingQuote(api, db, store, config, {
       hotel_id,
+      hotel_name,
+      city_name,
       room_id,
       rate_id,
       checkin,
