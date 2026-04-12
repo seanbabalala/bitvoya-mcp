@@ -2,17 +2,20 @@
 
 Luxury hotel intelligence and secure checkout handoff for AI travel agents.
 
-Bitvoya MCP gives agents a clean way to search high-end hotels, compare rates, explain benefits, prepare booking quotes, and hand travelers back to Bitvoya for secure completion.
+Bitvoya MCP gives agents a clean way to search high-end hotels, compare rates, explain premium stay benefits, prepare booking quotes, and hand travelers back to Bitvoya for secure completion.
 
 Normal users connect to the hosted MCP. No self-hosting is required.
 
 ## Why Bitvoya MCP
 
-- one hosted endpoint for agent access
-- live hotel, room, and rate discovery
-- grounded city and hotel context
-- explicit pricing semantics for agents
-- secure booking handoff back to Bitvoya
+Bitvoya is not just a hotel feed. It is built around luxury and five-star booking value.
+
+- luxury-first hotel coverage for high-end city stays, resorts, and flagship five-star properties
+- benefit-rich stays, including eligible offers such as room upgrades, daily breakfast, early check-in, late checkout, and hotel credits such as `USD 100` property credit at participating hotels
+- promotional value surfaced clearly, including eligible long-stay offers such as `stay 3 pay 2` and `stay 4 pay 3`
+- agent-ready hotel and rate output, so benefits and promotions are exposed in structured form instead of being buried in rate fine print
+- explicit pricing semantics, helping agents explain supplier total, service fee, and display total cleanly
+- secure booking handoff back to Bitvoya for final checkout completion
 
 ## Built For
 
@@ -55,6 +58,7 @@ Bitvoya MCP is designed for agentic travel discovery and booking preparation.
 - live luxury hotel search
 - hotel detail, media, and nearby context
 - room and rate comparison
+- structured benefit and promotion visibility before booking
 - explicit pricing semantics
 - booking quote preparation
 - booking intent creation
@@ -102,6 +106,17 @@ Agents should present price fields carefully.
   - `service_fee_cny`
   - `display_total_cny`
 - `display_total_cny` is the guest-facing total aligned with current Bitvoya product behavior
+
+## Luxury And Benefit Edge
+
+Bitvoya is especially strong when the traveler cares about premium stay value, not just the lowest visible rate.
+
+- eligible five-star and luxury rates can carry meaningful stay value beyond base room price
+- participating offers may include breakfast, upgrade priority, flexible arrival/departure perks, and property credit such as `USD 100` hotel credit
+- long-stay promotions such as `stay 3 pay 2` and `stay 4 pay 3` can materially change the real booking value
+- the MCP layer is designed so agents can surface those value signals before the traveler reaches checkout
+
+Benefit availability depends on hotel, rate, market, and stay dates. Agents should always use the returned hotel and rate payloads as the source of truth for a specific booking path.
 
 ## Setup Guides
 

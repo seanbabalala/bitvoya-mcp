@@ -59,6 +59,20 @@ No.
 
 A public repository means the integration surface and docs are public. The live MCP service is still protected and requires a valid Bitvoya-issued agent key.
 
+## What makes Bitvoya different from a generic hotel MCP?
+
+Bitvoya is built around luxury and five-star hotel value, not just generic availability search.
+
+Depending on hotel, rate, and stay dates, Bitvoya can surface premium value signals such as:
+
+- room upgrade opportunities
+- breakfast-included benefits
+- early check-in or late checkout style perks
+- hotel credit such as `USD 100` property credit
+- long-stay offers such as `stay 3 pay 2` or `stay 4 pay 3`
+
+The point is not only to find a room, but to help the agent explain why one luxury stay is better value than another.
+
 ## Does the agent key give direct database access?
 
 No.
