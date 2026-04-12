@@ -1,4 +1,11 @@
-# Configuration
+# Bitvoya MCP Operator Configuration
+
+This document is for Bitvoya operators and maintainers.
+
+Normal hosted MCP users do not need any of these values. They only need:
+
+- MCP endpoint: `https://bitvoya.com/api/mcp`
+- Bitvoya agent key from Dashboard -> Connect Agent
 
 This server reads runtime-only credentials from:
 
@@ -78,7 +85,7 @@ BITVOYA_MCP_REMOTE_REQUIRED_SCOPES=inventory.read,grounding.read
 - `BITVOYA_MCP_HANDOFF_BASE_URL` should point to the Bitvoya-hosted secure checkout route for public agent completion
 - `BITVOYA_MCP_HANDOFF_SIGNING_SECRET` signs short-lived booking-handoff launch tokens
 - `BITVOYA_MCP_HANDOFF_TOKEN_TTL_SECONDS` controls launch URL lifetime
-- `BITVOYA_MCP_REMOTE_AUTH_MODE=bearer` makes the remote gateway validate Bitvoya `agent key` bearer tokens from `mcp_agent_tokens`
+- `BITVOYA_MCP_REMOTE_AUTH_MODE=bearer` makes the remote gateway validate Bitvoya agent keys from `mcp_agent_tokens`
 - `BITVOYA_MCP_REMOTE_AUTH_MODE=signed_principal` expects a trusted upstream gateway to inject a signed principal envelope
 - `BITVOYA_MCP_REMOTE_AUTH_MODE=none` is only for isolated private testing and should not be used for public exposure
 - `BITVOYA_MCP_REMOTE_PRINCIPAL_HEADER` and `BITVOYA_MCP_REMOTE_SIGNATURE_HEADER` are used for gateway-signed principal mode
@@ -87,13 +94,11 @@ BITVOYA_MCP_REMOTE_REQUIRED_SCOPES=inventory.read,grounding.read
 - `BITVOYA_MCP_REMOTE_AUTH_MAX_SKEW_SECONDS` limits replay window for the signed principal envelope
 - `BITVOYA_MCP_REMOTE_REQUIRED_SCOPES` can enforce a minimum access floor before any MCP request is accepted
 - `BITVOYA_MCP_STORE_PATH` keeps local quote / intent / encrypted-card runtime state
-- quote / intent / card runtime state is now bound to `user_id/account_id/token_id` so public remote requests stay account-scoped
+- quote / intent / card runtime state is bound to `user_id/account_id/token_id` so public remote requests stay account-scoped
 - `BITVOYA_MCP_CARD_ENCRYPTION_KEY` is only required when `internal_execution` will use `attach_booking_card`
 - for local `stdio` usage, inbound auth is effectively delegated to local machine trust
 - for remote public usage, the SQL migration in [sql/001_mcp_auth_tables.sql](/root/bitvoya_mcp/sql/001_mcp_auth_tables.sql) should be applied so audit tables exist before launch
-- if booking tools are added later, keep booking auth, guest identity, and payment policy separate from this repo
-- token and executor table scaffolding lives in [sql/001_mcp_auth_tables.sql](/root/bitvoya_mcp/sql/001_mcp_auth_tables.sql)
-- secure public booking completion design lives in [SECURE_HANDOFF_DESIGN.md](/root/bitvoya_mcp/SECURE_HANDOFF_DESIGN.md)
+- secure public booking completion design lives in [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
 
 ## CI / GitHub Actions
 

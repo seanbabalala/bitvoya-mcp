@@ -1,4 +1,4 @@
-# Secure Handoff Design
+# Bitvoya MCP Secure Handoff
 
 This document defines the public booking-completion pattern for Bitvoya MCP.
 
@@ -6,7 +6,7 @@ The goal is:
 
 - let an external agent handle discovery, recommendation, quote, and intent creation
 - keep raw card handling, payment handling, and supplier-facing submit steps inside Bitvoya-controlled surfaces
-- make the final traveler journey still feel like "booking through the agent"
+- make the final traveler journey still feel like booking through the agent
 
 ## Product Position
 
@@ -164,7 +164,7 @@ Bitvoya internal services should:
 
 ## Handoff Token Model
 
-The MCP layer now scaffolds a signed-URL pattern for future public release.
+The MCP layer scaffolds a signed-URL pattern for public release.
 
 Recommended token properties:
 
@@ -203,59 +203,3 @@ That object answers:
 - who owns card input
 - who owns payment input
 - which tool should be used for status polling afterward
-
-## Config Model
-
-New runtime config keys:
-
-- `BITVOYA_MCP_HANDOFF_MODE`
-  - `disabled`
-  - `planned`
-  - `signed_url`
-- `BITVOYA_MCP_HANDOFF_BASE_URL`
-- `BITVOYA_MCP_HANDOFF_SIGNING_SECRET`
-- `BITVOYA_MCP_HANDOFF_TOKEN_TTL_SECONDS`
-
-Recommended production target:
-
-- `BITVOYA_MCP_HANDOFF_MODE=signed_url`
-- `BITVOYA_MCP_HANDOFF_BASE_URL` points to Bitvoya-hosted secure checkout route
-- `BITVOYA_MCP_HANDOFF_SIGNING_SECRET` kept only on trusted Bitvoya services
-
-## Scope Guidance
-
-Current standard user-created key profile can stay as-is for now:
-
-- `inventory.read`
-- `grounding.read`
-- `quote.write`
-- `intent.write`
-- `booking.state.read`
-
-That is enough for:
-
-- search
-- quote
-- intent
-- state polling
-
-If Bitvoya later wants a separate explicit public tool to mint hosted handoff sessions, that can be added as either:
-
-- a safe new public scope such as `handoff.create`
-- or a continuation of `intent.write`
-
-## Recommended Rollout
-
-1. Keep `executor_handoff` as the default public mode.
-2. Expose `secure_handoff` metadata in MCP responses.
-3. Build Bitvoya-hosted checkout page that consumes signed handoff URLs.
-4. Let hosted checkout call internal executor services.
-5. Keep `get_booking_state` as the public polling surface.
-6. Keep raw card and submit paths inside Bitvoya-controlled infrastructure.
-
-## Hard Rules
-
-- public agent keys must not receive direct `booking.execute`
-- public agent chat must not collect PAN
-- hosted checkout must preserve current pricing semantics, especially `display_total_cny` vs `service_fee_cny`
-- all orders and history remain bound to the same Bitvoya account, regardless of which agent key created the intent

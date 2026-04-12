@@ -1,12 +1,12 @@
-# Bitvoya MCP Auth Model
+# Bitvoya MCP Security and Access Model
 
-This document is the production auth and agent-key model for Bitvoya MCP.
+This document describes how Bitvoya MCP access works in production.
 
 It reflects the agreed direction:
 
 - Bitvoya is already live, so auth design must be production-grade rather than MVP-only.
 - A single Bitvoya user may create multiple agent keys.
-- All keys under that Bitvoya user must resolve to the same account view.
+- All keys under that Bitvoya user resolve to the same account view.
 - Key-level isolation is for authentication, audit, and policy, not for splitting a user's bookings or order history.
 - Sensitive execution remains behind Bitvoya-controlled boundaries even if discovery and intent flows are exposed to external agents.
 
@@ -23,7 +23,7 @@ Human website login and MCP access use different credentials, but they map to th
   - user-created agent key
   - remote bearer auth through Bitvoya MCP gateway
 
-The canonical principal must normalize both channels into the same identity fields:
+The canonical principal normalizes both channels into the same identity fields:
 
 - `user_id`
 - `account_id`
@@ -94,7 +94,6 @@ Default scopes:
 - `booking.state.read`
 
 This is the standard profile for current user-created keys.
-It should not fragment by agent at this stage.
 
 ### 2. Bitvoya-Managed Private Key
 
@@ -170,7 +169,7 @@ Hard production rule:
 
 Secondary production rule:
 
-- `token.manage` should remain on trusted account-management paths, not on general user-created agent keys
+- `token.manage` stays on trusted account-management paths, not on general user-created agent keys
 
 ## Data Visibility Model
 
@@ -180,7 +179,7 @@ That means:
 
 - if a user creates key A and key B, both keys can retrieve the same account-owned booking state
 - account history is the same no matter which valid key is used
-- audit must still preserve which specific `token_id` initiated which quote, intent, or state request
+- audit still preserves which specific `token_id` initiated which quote, intent, or state request
 
 This gives Bitvoya the right user experience:
 
@@ -190,7 +189,7 @@ This gives Bitvoya the right user experience:
 
 ## Audit Model
 
-Audit must be key-specific even though data visibility is account-shared.
+Audit is key-specific even though data visibility is account-shared.
 
 Minimum event binding:
 
@@ -211,14 +210,6 @@ Current SQL scaffolding already exists in [sql/001_mcp_auth_tables.sql](/root/bi
 - `mcp_agent_tokens`
 - `mcp_auth_audit_events`
 - `mcp_executor_handoff_jobs`
-
-This model lets Bitvoya answer:
-
-- which user initiated the action
-- which key initiated the action
-- which tool was called
-- whether the request was allowed or denied
-- which internal executor job later fulfilled the request
 
 ## Remote Production Topology
 
@@ -257,49 +248,3 @@ Current booking design is intentionally split:
   - downstream refresh or repair
 
 This is why user-created standard keys stop before `booking.execute`.
-
-It protects:
-
-- PAN / expiry handling
-- supplier-facing transactional submission
-- payment execution and reconciliation
-- future fraud and risk controls
-
-## Operational Rules
-
-Minimum production policy:
-
-- store only token hashes, never raw token secrets
-- show raw token only once at creation time
-- support individual key revoke
-- support optional expiry
-- deny revoked, expired, or inactive-account requests immediately
-- preserve account consistency across all keys for the same user
-- rate-limit and audit per `token_id`
-
-Compromise rule:
-
-- if a raw key leaks, revoke that key
-- do not revoke the user's whole account unless broader risk analysis requires it
-- sibling keys can remain valid if there is no account-wide compromise
-
-## Current Repo Mapping
-
-Current implementation anchors:
-
-- scope policy and key profiles:
-  - [src/authz.mjs](/root/bitvoya_mcp/src/authz.mjs)
-- token generation and hashing:
-  - [src/token-auth.mjs](/root/bitvoya_mcp/src/token-auth.mjs)
-- signed principal envelope verification:
-  - [src/remote-auth.mjs](/root/bitvoya_mcp/src/remote-auth.mjs)
-- operator verification script:
-  - [scripts/verify-agent-key.mjs](/root/bitvoya_mcp/scripts/verify-agent-key.mjs)
-
-The verification script is intended to answer, for a given key:
-
-- whether it exists
-- whether it is active, revoked, or expired
-- which `user_id` and `account_id` it binds to
-- which profile it matches
-- which MCP tools are allowed under the current policy

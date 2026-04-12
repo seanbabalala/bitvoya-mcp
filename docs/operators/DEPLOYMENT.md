@@ -1,6 +1,8 @@
-# Bitvoya MCP Deployment
+# Bitvoya MCP Operator Deployment
 
 This file is the operational source of truth for the live MCP gateway.
+
+It is for Bitvoya operators, not normal hosted MCP users.
 
 ## Rules
 
