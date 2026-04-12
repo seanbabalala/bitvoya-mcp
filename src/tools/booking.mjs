@@ -411,12 +411,93 @@ function formatMoneyLabel(value, currency = "CNY") {
   return `${rounded} ${currency || "CNY"}`;
 }
 
+function decodeBase64UrlUtf8(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    return Buffer.from(normalized, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function humanizeSlug(value) {
+  return String(value || "")
+    .split("-")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || null;
+}
+
+function parseFrontendSearchQuoteContext(quoteId) {
+  const normalized = normalizeId(quoteId);
+  if (!normalized || !normalized.startsWith("quote_")) {
+    return null;
+  }
+
+  const parts = normalized.split("_");
+  if (parts.length !== 7 || parts[0] !== "quote") {
+    return null;
+  }
+
+  const [, encodedSlug, versionRaw, checkin, checkout, adultRaw, childRaw] = parts;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(checkin) || !/^\d{4}-\d{2}-\d{2}$/.test(checkout)) {
+    return null;
+  }
+
+  const decodedSlug = decodeBase64UrlUtf8(encodedSlug);
+  if (!decodedSlug) {
+    return null;
+  }
+
+  const slugParts = decodedSlug.split("-").filter(Boolean);
+  const numericIndex = slugParts.findIndex((part) => /^\d+$/.test(part));
+  const citySlug = numericIndex > 0 ? slugParts.slice(0, numericIndex).join("-") : null;
+  const sourceHintId = numericIndex >= 0 ? slugParts[numericIndex] : null;
+  const hotelSlug =
+    numericIndex >= 0
+      ? slugParts.slice(numericIndex + 1).join("-")
+      : slugParts.join("-");
+  const adultNum = Number.parseInt(String(adultRaw || ""), 10);
+  const childNum = Number.parseInt(String(childRaw || ""), 10);
+  const version = Number.parseInt(String(versionRaw || ""), 10);
+
+  return {
+    token_kind: "frontend_search_context_quote_id",
+    version: Number.isFinite(version) ? version : null,
+    encoded_slug: encodedSlug,
+    decoded_slug: decodedSlug,
+    source_hint_id: sourceHintId,
+    city_slug: citySlug,
+    hotel_slug: hotelSlug || null,
+    city_name: humanizeSlug(citySlug),
+    hotel_name: humanizeSlug(hotelSlug),
+    checkin,
+    checkout,
+    adult_num: Number.isFinite(adultNum) ? adultNum : null,
+    child_num: Number.isFinite(childNum) ? childNum : null,
+    room_num: 1,
+  };
+}
+
 function classifyQuoteId(quoteId) {
   const normalized = normalizeId(quoteId);
   if (!normalized) {
     return {
       quote_id: null,
       origin: "missing_quote_id",
+      is_runtime_store_id: false,
+    };
+  }
+
+  if (parseFrontendSearchQuoteContext(normalized)) {
+    return {
+      quote_id: normalized,
+      origin: "frontend_search_context_quote_id",
       is_runtime_store_id: false,
     };
   }
@@ -448,17 +529,47 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
   const executionMode = normalizeExecutionMode(options);
   const quoteIdInfo = classifyQuoteId(params?.quote_id);
   const paymentMethod = normalizeId(params?.payment_method);
-  const isForeignQuote = quoteIdInfo.origin === "frontend_or_foreign_quote_id";
+  const parsedSearchQuote =
+    quoteIdInfo.origin === "frontend_search_context_quote_id"
+      ? parseFrontendSearchQuoteContext(params?.quote_id)
+      : null;
+  const isForeignQuote =
+    quoteIdInfo.origin === "frontend_or_foreign_quote_id" ||
+    quoteIdInfo.origin === "frontend_search_context_quote_id";
   const isRuntimeQuote = quoteIdInfo.origin === "runtime_store_quote_id";
+  const recoveredStayLabel =
+    parsedSearchQuote?.checkin && parsedSearchQuote?.checkout
+      ? `${parsedSearchQuote.checkin} to ${parsedSearchQuote.checkout}`
+      : null;
+  const recoveredGuestLabel =
+    Number.isFinite(parsedSearchQuote?.adult_num) && Number.isFinite(parsedSearchQuote?.child_num)
+      ? `${parsedSearchQuote.adult_num} adult(s), ${parsedSearchQuote.child_num} child(ren)`
+      : null;
+  const recoveredLookupParams = parsedSearchQuote
+    ? {
+        hotel_id: parsedSearchQuote.source_hint_id || parsedSearchQuote.decoded_slug,
+        hotel_name: parsedSearchQuote.hotel_name,
+        city_name: parsedSearchQuote.city_name,
+        checkin: parsedSearchQuote.checkin,
+        checkout: parsedSearchQuote.checkout,
+        adult_num: parsedSearchQuote.adult_num,
+        child_num: parsedSearchQuote.child_num,
+        room_num: parsedSearchQuote.room_num,
+      }
+    : null;
   const summary =
-    isForeignQuote
+    parsedSearchQuote
+      ? `Requested quote_id ${quoteIdInfo.quote_id} is a frontend search-context token for ${parsedSearchQuote.hotel_name || parsedSearchQuote.decoded_slug || "the selected hotel"}${recoveredStayLabel ? ` (${recoveredStayLabel}` : ""}${recoveredGuestLabel ? `${recoveredStayLabel ? "; " : " ("}${recoveredGuestLabel}` : ""}${recoveredStayLabel || recoveredGuestLabel ? ")" : ""}, not a server-owned booking quote. It never carried current live room_id / rate_id, so ${tool} cannot continue from it directly.`
+      : isForeignQuote
       ? `Requested quote_id ${quoteIdInfo.quote_id} is not a current MCP server-owned quote. It looks like a frontend or foreign-system quote token, so ${tool} cannot continue from it directly. Prepare a fresh live quote first.`
       : isRuntimeQuote
         ? `Requested quote_id ${quoteIdInfo.quote_id} is not available in the current MCP runtime store. It may already be expired or may have been minted by another deployment.`
         : `Requested quote_id ${quoteIdInfo.quote_id || "N/A"} is not available for booking execution in the current MCP runtime. Prepare a fresh live quote first.`;
   const presenterLines = [
     "Open with: The requested quote_id is not usable for booking execution in the current MCP runtime.",
-    isForeignQuote
+    parsedSearchQuote
+      ? "Angle: This token encodes search context only. It is not an expired booking quote; it never represented a frozen live room/rate selection."
+      : isForeignQuote
       ? "Angle: This looks like a frontend or foreign-system quote token, not the short-lived server-owned quote_id minted by prepare_booking_quote."
       : "Angle: Current MCP quote_ids are short-lived and runtime-scoped, so missing ids should be treated as expired-or-foreign rather than silently reused.",
     paymentMethod
@@ -473,11 +584,15 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
     intent: tool === "get_booking_state" ? "booking_state_inspection" : "booking_intent_execution",
     summary,
     recommended_next_tools: [
-      buildNextTool("get_hotel_rooms", "Reload live room inventory and current ids before creating a fresh quote.", [
-        "hotel_id",
-        "checkin",
-        "checkout",
-      ]),
+      buildNextTool(
+        "get_hotel_rooms",
+        parsedSearchQuote
+          ? "Recover canonical live hotel identity and current room/rate ids from the decoded frontend search token."
+          : "Reload live room inventory and current ids before creating a fresh quote.",
+        parsedSearchQuote
+          ? ["hotel_id", "hotel_name", "city_name", "checkin", "checkout"]
+          : ["hotel_id", "checkin", "checkout"]
+      ),
       buildNextTool("prepare_booking_quote", "Mint a fresh short-lived server-owned quote before creating booking intent.", [
         "hotel_id",
         "room_id",
@@ -488,6 +603,9 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
     ],
     warnings: [
       "create_booking_intent only accepts active server-owned quote_id values minted by prepare_booking_quote in this MCP deployment.",
+      ...(parsedSearchQuote
+        ? ["This token is search-stage context, not an expired lockable quote and not a frozen room/rate selection."]
+        : []),
       ...(isForeignQuote
         ? ["Do not pass frontend page quote tokens or foreign-system quote ids directly into create_booking_intent."]
         : []),
@@ -496,6 +614,12 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
       "Quote-scoped pricing is only trustworthy while the MCP server-owned quote is still active.",
     ],
     selection_hints: [
+      ...(parsedSearchQuote
+        ? [
+            "Use data.recovered_search_context.suggested_room_lookup_params with get_hotel_rooms first, because the token does not contain live room_id / rate_id.",
+            "After get_hotel_rooms returns current room_id / rate_id, call prepare_booking_quote and then retry create_booking_intent.",
+          ]
+        : []),
       paymentMethod
         ? `After preparing a fresh quote, reuse payment_method ${paymentMethod} with the same guest/contact payload.`
         : "After preparing a fresh quote, retry create_booking_intent with the intended payment_method and the same guest/contact payload.",
@@ -515,6 +639,12 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
         quote_id_origin: quoteIdInfo.origin,
         payment_method: paymentMethod,
       },
+      recovered_search_context: parsedSearchQuote
+        ? {
+            ...parsedSearchQuote,
+            suggested_room_lookup_params: recoveredLookupParams,
+          }
+        : null,
       booking_readiness: {
         status: "needs_fresh_quote",
       },

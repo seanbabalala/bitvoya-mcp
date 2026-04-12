@@ -141,9 +141,13 @@ export async function runBookingSmoke() {
     });
 
     assert.equal(staleIntent.status, "partial");
-    assert.equal(staleIntent.data?.requested_quote?.quote_id_origin, "frontend_or_foreign_quote_id");
+    assert.equal(staleIntent.data?.requested_quote?.quote_id_origin, "frontend_search_context_quote_id");
+    assert.equal(staleIntent.data?.recovered_search_context?.hotel_name, "Langham Melbourne");
+    assert.equal(staleIntent.data?.recovered_search_context?.city_name, "Melbourne");
     assert.equal(staleQuoteState.status, "partial");
-    assert.equal(staleQuoteState.data?.requested_quote?.quote_id_origin, "frontend_or_foreign_quote_id");
+    assert.equal(staleQuoteState.data?.requested_quote?.quote_id_origin, "frontend_search_context_quote_id");
+    assert.equal(staleQuoteState.data?.recovered_search_context?.checkin, "2026-04-14");
+    assert.equal(staleQuoteState.data?.recovered_search_context?.checkout, "2026-04-17");
 
     const quote = await prepareBookingQuote(api, db, store, config, {
       hotel_id: "875",
