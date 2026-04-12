@@ -53,6 +53,7 @@ function mergeUserInfoWithAccountBinding(userInfo, accountBinding) {
 
   return {
     ...base,
+    ...(accountBinding.user_id ? { id: accountBinding.user_id } : {}),
     ...(accountBinding.user_id ? { user_id: accountBinding.user_id } : {}),
     ...(accountBinding.account_id ? { account_id: accountBinding.account_id } : {}),
     ...(accountBinding.token_id ? { token_id: accountBinding.token_id } : {}),
@@ -1538,7 +1539,7 @@ export async function prepareBookingQuote(api, db, store, config, params, option
     room_num: params.room_num || 1,
     room_limit: 50,
     rate_limit_per_room: 50,
-  });
+  }, options);
 
   const roomsData = hotelRoomsPayload?.data || hotelRoomsPayload;
 
@@ -1926,7 +1927,9 @@ export async function submitBookingIntent(api, store, config, params, options = 
   }
 
   const legacyPayload = buildLegacySubmitPayload(currentIntent, config, store);
-  const submitResponse = await api.submitBooking(legacyPayload);
+  const submitResponse = await api.submitBooking(legacyPayload, {
+    requestPrincipal: options.request_principal || null,
+  });
   const submittedAt = new Date().toISOString();
   const orderId = normalizeId(firstNonEmpty(submitResponse?.order_id, submitResponse?.id));
   const bookingId = normalizeId(submitResponse?.booking_id);
@@ -1939,7 +1942,9 @@ export async function submitBookingIntent(api, store, config, params, options = 
   let liveRefreshError = null;
 
   try {
-    liveBookingDetails = summarizeBookingDetails(await api.getBookingDetails(orderId));
+    liveBookingDetails = summarizeBookingDetails(await api.getBookingDetails(orderId, {
+      requestPrincipal: options.request_principal || null,
+    }));
   } catch (error) {
     liveRefreshError = error?.message || String(error);
   }
@@ -1994,6 +1999,8 @@ export async function createBookingPaymentSession(api, store, params, options = 
     paymentType,
     successUrl: params.success_url,
     cancelUrl: params.cancel_url,
+  }, {
+    requestPrincipal: options.request_principal || null,
   });
 
   const updatedIntent = store.updateIntent(currentIntent.intent_id, (stored) =>
@@ -2036,7 +2043,9 @@ export async function refreshBookingState(api, store, params, options = {}) {
     throw new Error("Booking intent has not been submitted yet.");
   }
 
-  const liveDetails = summarizeBookingDetails(await api.getBookingDetails(orderId));
+  const liveDetails = summarizeBookingDetails(await api.getBookingDetails(orderId, {
+    requestPrincipal: options.request_principal || null,
+  }));
   const updatedIntent = store.updateIntent(currentIntent.intent_id, (stored) =>
     normalizeIntentState({
       ...stored,

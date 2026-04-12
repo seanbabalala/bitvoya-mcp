@@ -569,7 +569,7 @@ server.registerTool(
     payment_preference,
     require_free_cancellation,
     prefer_benefits,
-  }) => {
+  }, extra) => {
     const resolvedRoomLimit = clampLimit(
       room_limit,
       config.limits.defaultRoomLimit,
@@ -594,6 +594,8 @@ server.registerTool(
       payment_preference,
       require_free_cancellation,
       prefer_benefits,
+    }, {
+      request_principal: extra?.bitvoyaAuth?.principal || null,
     });
 
     return asTextResult(payload);
@@ -637,7 +639,7 @@ server.registerTool(
     payment_preference,
     require_free_cancellation,
     prefer_benefits,
-  }) => {
+  }, extra) => {
     const payload = await compareHotels(api, db, {
       hotel_ids,
       checkin,
@@ -649,6 +651,8 @@ server.registerTool(
       payment_preference,
       require_free_cancellation,
       prefer_benefits,
+    }, {
+      request_principal: extra?.bitvoyaAuth?.principal || null,
     });
 
     return asTextResult(payload);
@@ -702,7 +706,7 @@ server.registerTool(
     payment_preference,
     require_free_cancellation,
     prefer_benefits,
-  }) => {
+  }, extra) => {
     const payload = await compareRates(api, db, {
       hotel_id,
       checkin,
@@ -718,6 +722,8 @@ server.registerTool(
       payment_preference,
       require_free_cancellation,
       prefer_benefits,
+    }, {
+      request_principal: extra?.bitvoyaAuth?.principal || null,
     });
 
     return asTextResult(payload);
@@ -926,12 +932,13 @@ if (internalExecutionEnabled) {
         intent_id: z.string().min(1).describe("Booking intent id."),
       },
     },
-    async ({ intent_id }) => {
+    async ({ intent_id }, extra) => {
       const payload = await submitBookingIntent(api, store, config, {
         intent_id,
       }, {
         execution_mode: bookingExecutionMode,
         config,
+        request_principal: extra?.bitvoyaAuth?.principal || null,
       });
 
       return asTextResult(payload);
@@ -954,7 +961,7 @@ if (internalExecutionEnabled) {
         cancel_url: z.string().optional().describe("Optional absolute cancel redirect URL override."),
       },
     },
-    async ({ intent_id, success_url, cancel_url }) => {
+    async ({ intent_id, success_url, cancel_url }, extra) => {
       const payload = await createBookingPaymentSession(api, store, {
         intent_id,
         success_url,
@@ -962,6 +969,7 @@ if (internalExecutionEnabled) {
       }, {
         execution_mode: bookingExecutionMode,
         config,
+        request_principal: extra?.bitvoyaAuth?.principal || null,
       });
 
       return asTextResult(payload);
@@ -982,12 +990,13 @@ if (internalExecutionEnabled) {
         intent_id: z.string().min(1).describe("Booking intent id."),
       },
     },
-    async ({ intent_id }) => {
+    async ({ intent_id }, extra) => {
       const payload = await refreshBookingState(api, store, {
         intent_id,
       }, {
         execution_mode: bookingExecutionMode,
         config,
+        request_principal: extra?.bitvoyaAuth?.principal || null,
       });
 
       return asTextResult(payload);

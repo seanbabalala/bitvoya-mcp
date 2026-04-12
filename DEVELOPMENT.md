@@ -5,7 +5,7 @@ This file is for Bitvoya maintainers and contributors.
 ## Local Run
 
 ```bash
-cd /root/bitvoya_mcp
+cd <repo_root>
 npm install
 npm run start
 ```
@@ -15,7 +15,7 @@ npm run start
 Point your MCP client at:
 
 - command: `node`
-- args: `["/root/bitvoya_mcp/src/server.mjs"]`
+- args: `["<repo_root>/src/server.mjs"]`
 
 ## Useful Commands
 

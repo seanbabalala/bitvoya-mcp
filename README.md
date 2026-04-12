@@ -51,6 +51,12 @@ Example configuration:
 }
 ```
 
+If you are testing the hosted endpoint manually rather than through an MCP client, include:
+
+- `Accept: application/json, text/event-stream`
+
+Most MCP clients add that automatically.
+
 ## What Agents Can Do
 
 Bitvoya MCP is designed for agentic travel discovery and booking preparation.
@@ -120,10 +126,10 @@ Benefit availability depends on hotel, rate, market, and stay dates. Agents shou
 
 ## Setup Guides
 
-- client setup: [docs/public/CLIENT_SETUP.md](/root/bitvoya_mcp/docs/public/CLIENT_SETUP.md)
-- frequently asked questions: [docs/public/FAQ.md](/root/bitvoya_mcp/docs/public/FAQ.md)
-- security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
-- secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
+- client setup: [docs/public/CLIENT_SETUP.md](docs/public/CLIENT_SETUP.md)
+- frequently asked questions: [docs/public/FAQ.md](docs/public/FAQ.md)
+- security and access model: [docs/public/SECURITY_MODEL.md](docs/public/SECURITY_MODEL.md)
+- secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](docs/public/SECURE_HANDOFF.md)
 
 ## Important Notes
 
@@ -135,4 +141,4 @@ Benefit availability depends on hotel, rate, market, and stay dates. Agents shou
 
 ## Development
 
-Maintainers and contributors can use [DEVELOPMENT.md](/root/bitvoya_mcp/DEVELOPMENT.md).
+Maintainers and contributors can use [DEVELOPMENT.md](DEVELOPMENT.md).

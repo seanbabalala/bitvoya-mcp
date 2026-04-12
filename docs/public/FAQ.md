@@ -122,4 +122,4 @@ For Bitvoya hosted access, use the client's remote MCP mode and enter:
 - URL: `https://bitvoya.com/api/mcp`
 - Header: `Authorization: Bearer <your_agent_key>`
 
-For step-by-step client instructions, see [docs/public/CLIENT_SETUP.md](/root/bitvoya_mcp/docs/public/CLIENT_SETUP.md).
+For step-by-step client instructions, see [docs/public/CLIENT_SETUP.md](CLIENT_SETUP.md).

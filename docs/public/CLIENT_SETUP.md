@@ -27,6 +27,7 @@ Notes:
 - replace `<your_agent_key>` with the real Bitvoya key created in your dashboard
 - keep the `Bearer ` prefix
 - if your client uses a different field name such as `baseUrl` or `requestHeaders`, keep the same endpoint and header values
+- low-level manual HTTP testing should also send `Accept: application/json, text/event-stream`
 
 ## Cherry Studio
 
@@ -90,6 +91,16 @@ Check:
 - the key has not been revoked
 - you are using the hosted endpoint, not a local path
 
+### Initialize returns 406 Not Acceptable
+
+That usually means the request is missing the MCP accept header pair.
+
+For raw HTTP testing, include:
+
+- `Accept: application/json, text/event-stream`
+
+Most MCP desktop clients handle this automatically.
+
 ### Server connects but tools do not run
 
 Check:
@@ -112,3 +123,28 @@ For Bitvoya hosted access, use the remote MCP mode and enter:
 - do not share your agent key publicly
 - revoke and rotate a key from the Bitvoya dashboard if you think it was exposed
 - your website password and your agent key are different credentials
+
+## Raw HTTP Debug Example
+
+This is only for debugging. Normal users should connect through an MCP client UI.
+
+```bash
+curl https://bitvoya.com/api/mcp \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer <your_agent_key>' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "debug-client",
+        "version": "1.0"
+      }
+    }
+  }'
+```

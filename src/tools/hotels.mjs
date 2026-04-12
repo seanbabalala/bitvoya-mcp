@@ -3760,7 +3760,7 @@ export async function getHotelDetail(api, db, { hotel_id }) {
   });
 }
 
-export async function getHotelRooms(api, db, params) {
+export async function getHotelRooms(api, db, params, options = {}) {
   const [hotel, rooms] = await Promise.all([
     api.getHotelDetail(params.hotel_id),
     api.getHotelRooms({
@@ -3770,6 +3770,8 @@ export async function getHotelRooms(api, db, params) {
       adultNum: params.adult_num,
       childNum: params.child_num || 0,
       roomNum: params.room_num || 1,
+    }, {
+      requestPrincipal: options.request_principal || null,
     }),
   ]);
 
@@ -3873,7 +3875,7 @@ export async function getHotelRooms(api, db, params) {
   });
 }
 
-export async function compareHotels(api, db, params) {
+export async function compareHotels(api, db, params, options = {}) {
   const hotelIds = uniqueBy(
     asArray(params.hotel_ids).map((value) => normalizeId(value)).filter(Boolean),
     (value) => value
@@ -3913,6 +3915,8 @@ export async function compareHotels(api, db, params) {
             adultNum: stayContext.adult_num,
             childNum: stayContext.child_num,
             roomNum: stayContext.room_num,
+          }, {
+            requestPrincipal: options.request_principal || null,
           });
           const normalizedRooms = asArray(rawRooms).map((room) => normalizeRoom(room, 8));
           liveRateSummary = summarizeLiveRateSnapshot(normalizedRooms);
@@ -4167,7 +4171,7 @@ export async function compareHotels(api, db, params) {
   });
 }
 
-export async function compareRates(api, db, params) {
+export async function compareRates(api, db, params, options = {}) {
   const roomsPayload = await getHotelRooms(api, db, {
     hotel_id: params.hotel_id,
     checkin: params.checkin,
@@ -4177,7 +4181,7 @@ export async function compareRates(api, db, params) {
     room_num: params.room_num || 1,
     room_limit: params.room_limit || 10,
     rate_limit_per_room: params.rate_limit_per_room || 10,
-  });
+  }, options);
 
   const roomsData = roomsPayload?.data || roomsPayload;
   let flattenedRates = flattenRoomRates(roomsData.rooms);

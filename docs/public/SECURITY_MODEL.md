@@ -135,8 +135,6 @@ Possible scopes:
 
 ## Scope Policy
 
-Current scope catalog is implemented in [src/authz.mjs](/root/bitvoya_mcp/src/authz.mjs).
-
 Tool exposure rules:
 
 - public discovery tools require read scopes only
@@ -205,11 +203,7 @@ Minimum event binding:
 - request context
 - result context
 
-Current SQL scaffolding already exists in [sql/001_mcp_auth_tables.sql](/root/bitvoya_mcp/sql/001_mcp_auth_tables.sql):
-
-- `mcp_agent_tokens`
-- `mcp_auth_audit_events`
-- `mcp_executor_handoff_jobs`
+Bitvoya keeps separate token, audit, and handoff records so access control and fulfillment history can be traced safely.
 
 ## Remote Production Topology
 

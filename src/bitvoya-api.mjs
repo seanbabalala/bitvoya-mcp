@@ -1,5 +1,6 @@
 import { createHttpClient } from "./http.mjs";
 import { asArray, uniqueBy } from "./format.mjs";
+import { buildSignedPrincipalHeaders } from "./remote-auth.mjs";
 
 function unwrapEnvelope(response, endpoint) {
   const success =
@@ -38,6 +39,20 @@ function buildQuery(params) {
 
   const serialized = query.toString();
   return serialized ? `?${serialized}` : "";
+}
+
+function buildRequestPrincipalHeaders(config, requestPrincipal) {
+  if (!requestPrincipal) {
+    return undefined;
+  }
+
+  if (!config?.remoteAuth?.sharedSecret) {
+    throw new Error(
+      "BITVOYA_MCP_REMOTE_AUTH_SHARED_SECRET is required to forward Bitvoya account pricing context."
+    );
+  }
+
+  return buildSignedPrincipalHeaders(requestPrincipal, config);
 }
 
 export function createBitvoyaApi(config) {
@@ -119,10 +134,11 @@ export function createBitvoyaApi(config) {
       adultNum,
       childNum = 0,
       roomNum = 1,
-    }) {
+    }, options = {}) {
       const payload = unwrapEnvelope(
         await http.request("/hotels/rooms", {
           method: "POST",
+          headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
           body: {
             hotel_id: String(hotelId),
             checkin,
@@ -235,19 +251,22 @@ export function createBitvoyaApi(config) {
       );
     },
 
-    async submitBooking(bookingData) {
+    async submitBooking(bookingData, options = {}) {
       return unwrapEnvelope(
         await http.request("/booking/submit", {
           method: "POST",
+          headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
           body: bookingData,
         }),
         "/booking/submit"
       );
     },
 
-    async getBookingDetails(orderId) {
+    async getBookingDetails(orderId, options = {}) {
       return unwrapEnvelope(
-        await http.request(`/booking/${encodeURIComponent(String(orderId))}/details`),
+        await http.request(`/booking/${encodeURIComponent(String(orderId))}/details`, {
+          headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
+        }),
         `/booking/${orderId}/details`
       );
     },
@@ -258,10 +277,11 @@ export function createBitvoyaApi(config) {
       paymentType = "full_payment",
       successUrl,
       cancelUrl,
-    }) {
+    }, options = {}) {
       return unwrapEnvelope(
         await http.request("/payment/stripe/create-session", {
           method: "POST",
+          headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
           body: {
             order_id: String(orderId),
             payment_method: "stripe",
