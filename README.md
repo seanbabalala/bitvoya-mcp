@@ -1,12 +1,28 @@
 # Bitvoya MCP
 
-Hosted MCP for luxury hotel discovery, hotel evaluation, booking quote preparation, and secure checkout handoff.
+Luxury hotel intelligence and secure checkout handoff for AI travel agents.
 
-Bitvoya MCP is the public integration surface for using Bitvoya inventory and hotel intelligence inside agent workflows.
+Bitvoya MCP gives agents a clean way to search high-end hotels, compare rates, explain benefits, prepare booking quotes, and hand travelers back to Bitvoya for secure completion.
+
+Normal users connect to the hosted MCP. No self-hosting is required.
+
+## Why Bitvoya MCP
+
+- one hosted endpoint for agent access
+- live hotel, room, and rate discovery
+- grounded city and hotel context
+- explicit pricing semantics for agents
+- secure booking handoff back to Bitvoya
+
+## Built For
+
+- AI travel assistants
+- concierge and planning agents
+- luxury hotel recommendation workflows
+- member-facing travel copilots
+- Bitvoya-connected partner agents
 
 ## Quick Start
-
-Most users do not need to self-host anything.
 
 Connection flow:
 
@@ -32,7 +48,7 @@ Example configuration:
 }
 ```
 
-## What You Get
+## What Agents Can Do
 
 Bitvoya MCP is designed for agentic travel discovery and booking preparation.
 
@@ -55,7 +71,7 @@ Core tools:
 - `create_booking_intent`
 - `get_booking_state`
 
-## Booking Model
+## Booking Journey
 
 Bitvoya intentionally keeps sensitive execution on Bitvoya-hosted surfaces.
 
@@ -73,7 +89,7 @@ Agents do not directly own:
 - payment execution
 - final supplier-facing booking submission
 
-For public usage, card collection and payment completion happen on a Bitvoya-hosted secure checkout surface.
+That means the agent can do the discovery and booking-preparation work, while the traveler finishes card entry and final checkout on Bitvoya.
 
 ## Price Fields
 
@@ -87,6 +103,12 @@ Agents should present price fields carefully.
   - `display_total_cny`
 - `display_total_cny` is the guest-facing total aligned with current Bitvoya product behavior
 
+## Setup Guides
+
+- client setup: [docs/public/CLIENT_SETUP.md](/root/bitvoya_mcp/docs/public/CLIENT_SETUP.md)
+- security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
+- secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
+
 ## Important Notes
 
 - Bitvoya calls this flow `Connect Agent`
@@ -94,11 +116,6 @@ Agents should present price fields carefully.
 - website login credentials and MCP credentials are not the same thing
 - multiple agent keys under one Bitvoya user still map to the same Bitvoya account history
 - normal users connect to the hosted MCP and do not need direct database or server configuration
-
-## Public Reference Docs
-
-- security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
-- secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
 
 ## Development
 
