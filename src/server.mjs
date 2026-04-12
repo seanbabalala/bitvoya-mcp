@@ -7,11 +7,14 @@ import {
   buildNextTool,
   buildToolTextResult,
 } from "./agentic-output.mjs";
+import { getPrincipalFromAuthInfo, writeAuthAuditEvent } from "./agent-auth.mjs";
 import { getServerAuthProfile } from "./auth.mjs";
+import { evaluateToolAuthorization } from "./authz.mjs";
 import { createBitvoyaApi } from "./bitvoya-api.mjs";
 import { loadConfig, summarizeConfig } from "./config.mjs";
 import { createDb } from "./db.mjs";
 import { clampInteger, clampLimit } from "./format.mjs";
+import { startRemoteServer } from "./remote-server.mjs";
 import { createRuntimeStore } from "./runtime-store.mjs";
 import {
   attachBookingCard,
@@ -47,16 +50,23 @@ import {
 
 const config = loadConfig();
 const db = createDb(config);
+const authDb = createDb(config, {
+  section: "authDb",
+  poolKey: "bitvoya-mcp-auth",
+});
 const api = createBitvoyaApi(config);
 const authProfile = getServerAuthProfile(config);
 const store = createRuntimeStore(config);
 const bookingExecutionMode = config.bookingExecution.mode;
 const internalExecutionEnabled = bookingExecutionMode === "internal_execution";
-
-const server = new McpServer({
+const enforceRemoteAuth =
+  config.server.transport !== "stdio" && config.remoteAuth.mode !== "none";
+let authAuditEnabled = true;
+const serverInfo = {
   name: config.server.name,
   version: config.server.version,
-});
+};
+let remoteServer = null;
 
 function asTextResult(payload) {
   return buildToolTextResult(payload);
@@ -94,6 +104,227 @@ const rateComparisonPriorityProfileSchema = z.enum([
 
 const paymentPreferenceSchema = z.enum(["any", "prepay", "guarantee"]);
 
+function buildRequestAuditContext(extra) {
+  const headers = extra?.requestInfo?.headers || {};
+
+  return {
+    url: extra?.requestInfo?.url ? String(extra.requestInfo.url) : null,
+    mcp_session_id: headers["mcp-session-id"] || null,
+    transport: config.server.transport,
+  };
+}
+
+function extractRequestIp(extra) {
+  const headers = extra?.requestInfo?.headers || {};
+  const forwardedFor = headers["x-forwarded-for"];
+
+  if (typeof forwardedFor === "string" && forwardedFor.trim()) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  const realIp = headers["x-real-ip"];
+  if (typeof realIp === "string" && realIp.trim()) {
+    return realIp.trim();
+  }
+
+  return null;
+}
+
+function describeAuthorizationFailure(toolName, authorization) {
+  const missingScopes =
+    authorization?.missing_scopes && authorization.missing_scopes.length > 0
+      ? ` Missing scopes: ${authorization.missing_scopes.join(", ")}.`
+      : "";
+
+  return `Bitvoya principal is not authorized for ${toolName}. Reason: ${authorization?.reason || "unknown"}.${missingScopes}`;
+}
+
+function resolveToolResourceAccess(args) {
+  if (!args || typeof args !== "object") {
+    return {
+      accountId: null,
+      bindingRequired: false,
+      bindingMissing: false,
+      resourceType: null,
+      resourceId: null,
+    };
+  }
+
+  if (args.intent_id) {
+    const intent = store.getIntent(args.intent_id);
+    return {
+      accountId: intent?.account_binding?.account_id || null,
+      bindingRequired: Boolean(intent),
+      bindingMissing: Boolean(intent && !intent?.account_binding?.account_id),
+      resourceType: "intent",
+      resourceId: String(args.intent_id),
+    };
+  }
+
+  if (args.quote_id) {
+    const quote = store.getQuote(args.quote_id);
+    return {
+      accountId: quote?.account_binding?.account_id || null,
+      bindingRequired: Boolean(quote),
+      bindingMissing: Boolean(quote && !quote?.account_binding?.account_id),
+      resourceType: "quote",
+      resourceId: String(args.quote_id),
+    };
+  }
+
+  if (args.card_reference_id) {
+    const card = store.getCard(args.card_reference_id);
+    return {
+      accountId: card?.account_binding?.account_id || null,
+      bindingRequired: Boolean(card),
+      bindingMissing: Boolean(card && !card?.account_binding?.account_id),
+      resourceType: "card_reference",
+      resourceId: String(args.card_reference_id),
+    };
+  }
+
+  return {
+    accountId: null,
+    bindingRequired: false,
+    bindingMissing: false,
+    resourceType: null,
+    resourceId: null,
+  };
+}
+
+async function auditToolCall(toolName, extra, payload = {}) {
+  if (!authAuditEnabled || !enforceRemoteAuth || !extra?.authInfo) {
+    return;
+  }
+
+  const principal = getPrincipalFromAuthInfo(extra.authInfo);
+  if (!principal) {
+    return;
+  }
+
+  try {
+    await writeAuthAuditEvent(authDb, {
+      principal,
+      event_type: "tool_call",
+      tool_name: toolName,
+      status: payload.status || "allowed",
+      reason_code: payload.reason_code || null,
+      ip_address: extractRequestIp(extra),
+      user_agent: extra?.requestInfo?.headers?.["user-agent"] || null,
+      request_context: {
+        ...buildRequestAuditContext(extra),
+        ...(payload.request_context || {}),
+      },
+      result_context: payload.result_context || {},
+    });
+  } catch (error) {
+    if (error?.code === "ER_NO_SUCH_TABLE") {
+      authAuditEnabled = false;
+      console.error(
+        "mcp_auth_audit_events table is missing in the configured auth database. Disabling MCP audit writes until the migration is applied."
+      );
+      return;
+    }
+
+    console.error(`Failed to audit tool ${toolName}:`, error?.message || error);
+  }
+}
+
+function wrapToolHandler(toolName, handler) {
+  return async (...callArgs) => {
+    const hasArgs = callArgs.length === 2;
+    const args = hasArgs ? callArgs[0] : undefined;
+    const extra = (hasArgs ? callArgs[1] : callArgs[0]) || {};
+    const principal = getPrincipalFromAuthInfo(extra.authInfo);
+    const resourceAccess = resolveToolResourceAccess(args);
+
+    if (enforceRemoteAuth) {
+      if (resourceAccess.bindingMissing) {
+        await auditToolCall(toolName, extra, {
+          status: "denied",
+          reason_code: "resource_binding_missing",
+          request_context: {
+            resource_type: resourceAccess.resourceType,
+            resource_id: resourceAccess.resourceId,
+          },
+        });
+        throw new Error(
+          `Bitvoya ${resourceAccess.resourceType || "resource"} ${resourceAccess.resourceId || ""} is not bound to an account and cannot be used through the public MCP gateway.`
+        );
+      }
+
+      const authorization = evaluateToolAuthorization(principal, toolName, {
+        bookingExecutionMode,
+        resourceAccountId: resourceAccess.accountId,
+      });
+
+      if (!authorization.allowed) {
+        await auditToolCall(toolName, extra, {
+          status: "denied",
+          reason_code: authorization.reason,
+          request_context: {
+            resource_type: resourceAccess.resourceType,
+            resource_id: resourceAccess.resourceId,
+            resource_account_id: resourceAccess.accountId,
+          },
+          result_context: {
+            missing_scopes: authorization.missing_scopes,
+          },
+        });
+        throw new Error(describeAuthorizationFailure(toolName, authorization));
+      }
+    }
+
+    const nextExtra = {
+      ...extra,
+      bitvoyaAuth: {
+        principal,
+        resourceAccountId: resourceAccess.accountId,
+      },
+    };
+
+    try {
+      const result = hasArgs ? await handler(args, nextExtra) : await handler(nextExtra);
+      await auditToolCall(toolName, extra, {
+        status: "allowed",
+        reason_code: "authorized",
+        request_context: {
+          resource_type: resourceAccess.resourceType,
+          resource_id: resourceAccess.resourceId,
+          resource_account_id: resourceAccess.accountId,
+        },
+      });
+      return result;
+    } catch (error) {
+      await auditToolCall(toolName, extra, {
+        status: "error",
+        reason_code: "handler_error",
+        request_context: {
+          resource_type: resourceAccess.resourceType,
+          resource_id: resourceAccess.resourceId,
+          resource_account_id: resourceAccess.accountId,
+        },
+        result_context: {
+          message: error?.message || String(error),
+        },
+      });
+      throw error;
+    }
+  };
+}
+
+function createMcpServerInstance() {
+  const server = new McpServer(serverInfo);
+  const registerTool = server.registerTool.bind(server);
+
+  server.registerTool = (name, toolConfig, handler) =>
+    registerTool(name, toolConfig, wrapToolHandler(name, handler));
+
+  registerServerTools(server);
+  return server;
+}
+
+function registerServerTools(server) {
 server.registerTool(
   "search_cities",
   agenticReadTool({
@@ -222,9 +453,30 @@ server.registerTool(
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for pricing lookup."),
       offset: z.number().int().min(0).max(200).optional().describe("Result offset for local pagination."),
       limit: z.number().int().min(1).max(20).optional().describe("Maximum number of hotels to return."),
+      priority_profile: hotelComparisonPriorityProfileSchema
+        .optional()
+        .describe("How to rank the returned shortlist: balanced, price, perks, luxury, location, flexibility, or low_due_now."),
+      payment_preference: paymentPreferenceSchema
+        .optional()
+        .describe("Optional preferred payment path to bias shortlist ranking."),
+      require_free_cancellation: z.boolean().optional().describe("Bias shortlist logic toward flexible inventory; must still be validated on live rates."),
+      prefer_benefits: z.boolean().optional().describe("Bias shortlist logic toward explicit member/perk payloads."),
     },
   }),
-  async ({ query, city_id, city_name, checkin, checkout, adult_num, offset, limit }) => {
+  async ({
+    query,
+    city_id,
+    city_name,
+    checkin,
+    checkout,
+    adult_num,
+    offset,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  }) => {
     if (!query && !city_id && !city_name) {
       throw new Error("One of query, city_id, or city_name is required.");
     }
@@ -240,6 +492,10 @@ server.registerTool(
       adult_num: adult_num || 2,
       offset: resolvedOffset,
       limit: resolvedLimit,
+      priority_profile,
+      payment_preference,
+      require_free_cancellation,
+      prefer_benefits,
     });
     return asTextResult(payload);
   }
@@ -489,7 +745,7 @@ server.registerTool(
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
     },
   },
-  async ({ hotel_id, room_id, rate_id, checkin, checkout, adult_num, child_num, room_num }) => {
+  async ({ hotel_id, room_id, rate_id, checkin, checkout, adult_num, child_num, room_num }, extra) => {
     const payload = await prepareBookingQuote(api, db, store, config, {
       hotel_id,
       room_id,
@@ -502,6 +758,7 @@ server.registerTool(
     }, {
       execution_mode: bookingExecutionMode,
       config,
+      request_principal: extra?.bitvoyaAuth?.principal || null,
     });
 
     return asTextResult(payload);
@@ -525,6 +782,8 @@ server.registerTool(
         first_name: z.string().min(1),
         last_name: z.string().min(1),
         gender: z.string().optional(),
+        frequent_traveler: z.string().optional(),
+        membership_level: z.string().optional(),
       }),
       contact: z.object({
         email: z.string().min(1),
@@ -554,7 +813,7 @@ server.registerTool(
       user_info: z.record(z.string(), z.unknown()).optional().describe("Optional user snapshot for later legacy-submit bridging."),
     },
   },
-  async ({ quote_id, payment_method, guest_primary, contact, companions, children, arrival_time, special_requests, user_info }) => {
+  async ({ quote_id, payment_method, guest_primary, contact, companions, children, arrival_time, special_requests, user_info }, extra) => {
     const payload = await createBookingIntent(store, {
       quote_id,
       payment_method,
@@ -568,6 +827,7 @@ server.registerTool(
     }, {
       execution_mode: bookingExecutionMode,
       config,
+      request_principal: extra?.bitvoyaAuth?.principal || null,
     });
 
     return asTextResult(payload);
@@ -595,7 +855,7 @@ if (internalExecutionEnabled) {
         card_brand: z.string().optional().describe("Optional card brand override."),
       },
     },
-    async ({ intent_id, card_reference_id, pan, expiry, cardholder_name, card_type, card_brand }) => {
+    async ({ intent_id, card_reference_id, pan, expiry, cardholder_name, card_type, card_brand }, extra) => {
       if (!card_reference_id && (!pan || !expiry)) {
         throw new Error("Either card_reference_id or pan + expiry is required.");
       }
@@ -611,6 +871,7 @@ if (internalExecutionEnabled) {
       }, {
         execution_mode: bookingExecutionMode,
         config,
+        request_principal: extra?.bitvoyaAuth?.principal || null,
       });
 
       return asTextResult(payload);
@@ -920,8 +1181,13 @@ server.registerTool(
   }
 );
 
+}
+
+const server = createMcpServerInstance();
+
 async function main() {
   const dbStatus = await db.ping();
+  const authDbStatus = await authDb.ping();
   console.error("bitvoya-mcp starting");
   console.error(
     JSON.stringify(
@@ -933,6 +1199,7 @@ async function main() {
           internalExecutionToolsExposed: internalExecutionEnabled,
         },
         dbStatus,
+        authDbStatus,
         store: {
           path: store.getStorePath(),
           counts: store.getSnapshotCounts(),
@@ -943,12 +1210,36 @@ async function main() {
     )
   );
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  if (config.server.transport === "stdio") {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    return;
+  }
+
+  if (config.server.transport === "streamable_http") {
+    remoteServer = await startRemoteServer({
+      config,
+      authDb,
+      buildServer: createMcpServerInstance,
+    });
+    console.error(
+      `bitvoya-mcp remote gateway listening on http://${config.http.host}:${config.http.port}${config.http.path}`
+    );
+    return;
+  }
+
+  throw new Error(`Unsupported BITVOYA_MCP_TRANSPORT '${config.server.transport}'.`);
 }
 
 async function shutdown() {
+  if (remoteServer) {
+    await remoteServer.close();
+    remoteServer = null;
+  }
+
+  await server.close();
   await db.close();
+  await authDb.close();
 }
 
 process.on("SIGINT", async () => {

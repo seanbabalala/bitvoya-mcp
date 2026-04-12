@@ -7,11 +7,14 @@
   "scripts": {
     "start": "node ./src/server.mjs",
     "dev": "node --watch ./src/server.mjs",
-    "check:syntax": "node --check ./src/server.mjs && node --check ./src/auth.mjs && node --check ./src/authz.mjs && node --check ./src/remote-auth.mjs && node --check ./src/token-auth.mjs && node --check ./src/handoff.mjs && node --check ./src/tools/cities.mjs && node --check ./src/tools/content.mjs && node --check ./src/tools/hotels.mjs && node --check ./src/tools/booking.mjs && node --check ./scripts/smoke-discovery.mjs && node --check ./scripts/smoke-booking.mjs && node --check ./scripts/smoke-all.mjs && node --check ./scripts/verify-agent-key.mjs",
+    "check:syntax": "node --check ./src/server.mjs && node --check ./src/auth.mjs && node --check ./src/authz.mjs && node --check ./src/agent-auth.mjs && node --check ./src/remote-auth.mjs && node --check ./src/remote-server.mjs && node --check ./src/token-auth.mjs && node --check ./src/handoff.mjs && node --check ./src/tools/cities.mjs && node --check ./src/tools/content.mjs && node --check ./src/tools/hotels.mjs && node --check ./src/tools/booking.mjs && node --check ./scripts/smoke-discovery.mjs && node --check ./scripts/smoke-booking.mjs && node --check ./scripts/smoke-all.mjs && node --check ./scripts/verify-agent-key.mjs && node --check ./scripts/create-handoff-session.mjs && node --check ./scripts/migrate-auth-schema.mjs",
     "smoke:discovery": "node ./scripts/smoke-discovery.mjs",
     "smoke:booking": "node ./scripts/smoke-booking.mjs",
     "smoke:all": "node ./scripts/smoke-all.mjs",
-    "verify:agent-key": "node ./scripts/verify-agent-key.mjs"
+    "verify:agent-key": "node ./scripts/verify-agent-key.mjs",
+    "create:handoff": "node ./scripts/create-handoff-session.mjs",
+    "migrate:auth": "node ./scripts/migrate-auth-schema.mjs",
+    "deploy:remote": "bash ./scripts/release_live.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
