@@ -3173,6 +3173,9 @@ export async function searchHotels(api, db, params) {
           adult_num: params.adult_num || 2,
         }
       : null;
+  const stayDateValidation = stayContext
+    ? buildStayDateValidation(stayContext.checkin, stayContext.checkout)
+    : null;
 
   let searchStrategy = null;
   let resolvedCity = null;
@@ -3551,6 +3554,19 @@ export async function searchHotels(api, db, params) {
     );
   }
 
+  const warnings = [];
+  if (stayDateValidation?.status === "past_stay") {
+    warnings.push(
+      `The supplied stay dates (${stayContext.checkin} to ${stayContext.checkout}) are already in the past relative to the MCP server date ${stayDateValidation.server_today}.`
+    );
+  } else if (stayDateValidation?.status === "invalid_range") {
+    warnings.push(
+      `The supplied stay range is invalid because checkout ${stayContext.checkout} is not after checkin ${stayContext.checkin}.`
+    );
+  } else if (stayDateValidation?.status === "invalid_format") {
+    warnings.push("The supplied stay dates are not valid YYYY-MM-DD values.");
+  }
+
   const status =
     activeSection?.count || combinedResults.length > 0 || cityCandidates.length > 0 || hotelCandidates.length > 0
       ? "ok"
@@ -3616,6 +3632,7 @@ export async function searchHotels(api, db, params) {
               "query",
             ]),
           ],
+    warnings,
     pricing_notes: [
       "search_price.supplier_min_price_cny is only a search-stage supplier signal.",
       "Use get_hotel_rooms for checkout-relevant display_total_cny and service_fee_cny.",
@@ -3659,6 +3676,7 @@ export async function searchHotels(api, db, params) {
         limit,
         stayContext,
       }),
+      date_validation: stayDateValidation,
       query_resolution: queryResolution,
       pricing_notice: buildSearchPricingNotice(stayContext),
       city_candidates: cityCandidates,
