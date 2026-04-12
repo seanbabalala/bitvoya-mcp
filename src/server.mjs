@@ -61,6 +61,15 @@ const bookingExecutionMode = config.bookingExecution.mode;
 const internalExecutionEnabled = bookingExecutionMode === "internal_execution";
 const enforceRemoteAuth =
   config.server.transport !== "stdio" && config.remoteAuth.mode !== "none";
+const serverLocalTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const serverLocalDate = new Intl.DateTimeFormat("en-CA", {
+  timeZone: serverLocalTimeZone,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+}).format(new Date());
+const relativeDateInstruction =
+  `When the user says relative dates like today, tomorrow, or the day after tomorrow, resolve them against the MCP server-local calendar date ${serverLocalDate} (${serverLocalTimeZone}) and pass concrete YYYY-MM-DD dates instead of asking for clarification by default.`;
 let authAuditEnabled = true;
 const serverInfo = {
   name: config.server.name,
@@ -443,13 +452,13 @@ server.registerTool(
   "search_hotels",
   agenticReadTool({
     description:
-      "API-first live hotel discovery for Bitvoya inventory. Search by city or keyword and optionally attach search-stage supplier min prices.",
+      `API-first live hotel discovery for Bitvoya inventory. Search by city or keyword and optionally attach search-stage supplier min prices. ${relativeDateInstruction}`,
     inputSchema: {
       query: z.string().optional().describe("Hotel or destination keyword."),
       city_id: z.string().optional().describe("Known Bitvoya city id."),
       city_name: z.string().optional().describe("City name to resolve through Bitvoya suggest API."),
-      checkin: z.string().optional().describe("Stay start date in YYYY-MM-DD."),
-      checkout: z.string().optional().describe("Stay end date in YYYY-MM-DD."),
+      checkin: z.string().optional().describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().optional().describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for pricing lookup."),
       offset: z.number().int().min(0).max(200).optional().describe("Result offset for local pagination."),
       limit: z.number().int().min(1).max(20).optional().describe("Maximum number of hotels to return."),
@@ -535,11 +544,11 @@ server.registerTool(
   "get_hotel_rooms",
   agenticReadTool({
     description:
-      "Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics.",
+      `Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
-      checkin: z.string().min(1).describe("Stay start date in YYYY-MM-DD."),
-      checkout: z.string().min(1).describe("Stay end date in YYYY-MM-DD."),
+      checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
       child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
@@ -606,15 +615,15 @@ server.registerTool(
   "compare_hotels",
   agenticReadTool({
     description:
-      "Compare multiple hotels with agent-oriented strengths, tradeoffs, benefit signals, and optional live stay-price snapshots.",
+      `Compare multiple hotels with agent-oriented strengths, tradeoffs, benefit signals, and optional live stay-price snapshots. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_ids: z
         .array(z.string().min(1))
         .min(2)
         .max(5)
         .describe("Two to five Bitvoya hotel ids to compare."),
-      checkin: z.string().optional().describe("Optional stay start date in YYYY-MM-DD for live rate snapshots."),
-      checkout: z.string().optional().describe("Optional stay end date in YYYY-MM-DD for live rate snapshots."),
+      checkin: z.string().optional().describe(`Optional stay start date in YYYY-MM-DD for live rate snapshots. ${relativeDateInstruction}`),
+      checkout: z.string().optional().describe(`Optional stay end date in YYYY-MM-DD for live rate snapshots. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for live stay comparison."),
       child_num: z.number().int().min(0).max(6).optional().describe("Number of children for live stay comparison."),
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms for live stay comparison."),
@@ -663,11 +672,11 @@ server.registerTool(
   "compare_rates",
   agenticReadTool({
     description:
-      "Compare room/rate options inside one hotel and surface cheapest, most flexible, best-benefits, best-guarantee, and best-prepay picks.",
+      `Compare room/rate options inside one hotel and surface cheapest, most flexible, best-benefits, best-guarantee, and best-prepay picks. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
-      checkin: z.string().min(1).describe("Stay start date in YYYY-MM-DD."),
-      checkout: z.string().min(1).describe("Stay end date in YYYY-MM-DD."),
+      checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
       child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
@@ -734,7 +743,7 @@ server.registerTool(
   "prepare_booking_quote",
   {
     description:
-      "Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection.",
+      `Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection. ${relativeDateInstruction}`,
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: false,
@@ -744,8 +753,8 @@ server.registerTool(
       hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
       room_id: z.string().min(1).describe("Selected room id."),
       rate_id: z.string().min(1).describe("Selected rate id from get_hotel_rooms."),
-      checkin: z.string().min(1).describe("Stay start date in YYYY-MM-DD."),
-      checkout: z.string().min(1).describe("Stay end date in YYYY-MM-DD."),
+      checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
       child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
       room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),

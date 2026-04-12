@@ -1643,6 +1643,23 @@ function uniqueTexts(values, limit = 4) {
   ).slice(0, limit);
 }
 
+function isLikelyTransientLiveError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("abort") ||
+    message.includes("fetch failed") ||
+    message.includes("network") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up")
+  );
+}
+
+function summarizeLiveError(error, fallback = "Live Bitvoya inventory request failed.") {
+  return compactText(String(error?.message || error || fallback), 180) || fallback;
+}
+
 function getRateLowestDueNowCny(rate) {
   const candidates = [];
 
@@ -2102,9 +2119,36 @@ function buildSearchAgentBrief({
   results = [],
   selectionGuide = null,
   stayContext = null,
+  warnings = [],
+  cityCandidates = [],
 } = {}) {
   const topResult = asArray(results)[0] || null;
+  const timeoutWarning = asArray(warnings).find((warning) => /timed out|timeout|abort/i.test(String(warning || ""))) || null;
   if (!topResult) {
+    if (timeoutWarning) {
+      const resolvedCityName = cityCandidates[0]?.city_name || cityCandidates[0]?.city_name_en || null;
+      const recommendedOpening = resolvedCityName
+        ? `Do not ask the traveler to restate the same request. Explain that live inventory timed out for ${resolvedCityName} and that the next step is a retry or fallback, not re-qualification.`
+        : "Do not ask the traveler to restate the same request. Explain that live inventory timed out and that the next step is a retry or fallback, not re-qualification.";
+      const recommendedAngle = stayContext
+        ? "Keep the existing stay request intact and frame the issue as a transient live-inventory timeout."
+        : "Frame the issue as a transient live-inventory timeout before asking for any new input.";
+      const nextQuestion = stayContext
+        ? "Ask whether to retry immediately or switch to a static/grounded shortlist while live inventory recovers."
+        : "Ask whether to retry immediately or use a non-live shortlist first.";
+
+      return {
+        recommended_opening: recommendedOpening,
+        recommended_angle: recommendedAngle,
+        next_question: nextQuestion,
+        presenter_lines: buildAgentBriefPresenterLines({
+          recommendedOpening,
+          recommendedAngle,
+          nextQuestion,
+        }),
+      };
+    }
+
     return {
       recommended_opening: "No clear hotel winner emerged yet, so pivot into clarification instead of pretending there is a recommendation.",
       recommended_angle: "Use destination, date, or traveler-priority clarification before describing any property as a winner.",
@@ -2854,12 +2898,21 @@ async function loadPriceMap(api, hotelIds, stayContext) {
     return new Map();
   }
 
-  const priceRows = await api.getHotelPrices({
-    hotelIds,
-    checkin: stayContext.checkin,
-    checkout: stayContext.checkout,
-    adultNum: stayContext.adult_num,
-  });
+  let priceRows = [];
+  try {
+    priceRows = await api.getHotelPrices({
+      hotelIds,
+      checkin: stayContext.checkin,
+      checkout: stayContext.checkout,
+      adultNum: stayContext.adult_num,
+    });
+  } catch (error) {
+    if (!isLikelyTransientLiveError(error)) {
+      throw error;
+    }
+
+    priceRows = [];
+  }
 
   return new Map(
     priceRows
@@ -3302,6 +3355,50 @@ function buildGroundingFallbackSection(results, { query, offset = 0, limit = 5, 
   };
 }
 
+function buildGroundingRecoveryAgentBrief(results = [], stayContext = null) {
+  const topPick = asArray(results)[0] || null;
+  if (!topPick) {
+    return null;
+  }
+
+  const recommendedOpening =
+    "Lead with the grounded winner instead of saying the search failed. Make clear that live inventory needs a retry, but hotel-fit reasoning is already usable.";
+  const recommendedAngle = compactText(
+    firstNonEmpty(
+      topPick?.decision_brief?.choose_reasons?.[0],
+      topPick?.grounding_excerpt?.why_stay_here,
+      topPick?.grounding_excerpt?.luxury_fit
+    ),
+    180
+  );
+  const branches = uniqueTexts(
+    [
+      stayContext
+        ? "If the traveler is date-fixed, inspect this grounded winner first, then retry live rooms."
+        : "If the traveler is still flexible, use this grounded shortlist to narrow style before asking for dates.",
+      "If the traveler wants bookability now, retry the live hotel search after the timeout rather than abandoning the property.",
+    ],
+    3
+  );
+  const nextQuestion = stayContext
+    ? "Ask whether to retry live pricing now or inspect the top grounded hotel first."
+    : "Ask for concrete dates only after presenting the grounded winner.";
+
+  return {
+    mode: "grounding_recovery",
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    branches,
+    next_question: nextQuestion,
+    presenter_lines: buildAgentBriefPresenterLines({
+      recommendedOpening,
+      recommendedAngle,
+      branches,
+      nextQuestion,
+    }),
+  };
+}
+
 function shouldPreferGroundingClusterReview({ routeDecision, hotelCandidates, groundingCandidates }) {
   if (routeDecision?.recommended_route !== "direct_hotel") {
     return false;
@@ -3378,6 +3475,7 @@ function buildGroundingRecoveryResult({
         : "low",
     reason: summaryPrefix,
   };
+  const agentBrief = buildGroundingRecoveryAgentBrief(groundingFallbackSection.results, stayContext);
 
   return buildAgenticToolResult({
     tool: "search_hotels",
@@ -3443,6 +3541,7 @@ function buildGroundingRecoveryResult({
       applied_preferences: null,
       comparison_method: groundingFallbackSection.comparison_method,
       selection_guide: groundingFallbackSection.selection_guide,
+      agent_brief: agentBrief,
       count: groundingFallbackSection.count,
       total_matches: groundingFallbackSection.total_matches,
       next_offset: groundingFallbackSection.next_offset,
@@ -3835,33 +3934,44 @@ export async function searchHotels(api, db, params) {
   let directHotelSection = null;
   let exposeCityInventorySection = false;
   let exposeDirectHotelSection = false;
+  const liveWarnings = [];
 
   if (source === "city_id") {
     resolvedCity = { id: cityId, name: cityName, nameEn: null };
     searchStrategy = query ? "city_inventory_filtered" : "city_inventory";
 
-    const [cityHotels, cityGroundingMap] = await Promise.all([
-      api.searchHotelsByCity(cityId),
-      getCityGroundingSnapshotMap(db, [cityId]),
-    ]);
+    const cityGroundingMap = await getCityGroundingSnapshotMap(db, [cityId]);
+    let cityHotels = [];
+    try {
+      cityHotels = await api.searchHotelsByCity(cityId);
+    } catch (error) {
+      if (!isLikelyTransientLiveError(error)) {
+        throw error;
+      }
+
+      liveWarnings.push(`Live city inventory timed out for city_id ${cityId}: ${summarizeLiveError(error)}`);
+      cityHotels = [];
+    }
 
     cityCandidates = [buildExplicitCityCandidateRow(resolvedCity, cityGroundingMap.get(cityId) || null)];
-    exposeCityInventorySection = true;
-    cityInventorySection = await buildRankedHotelSection(
-      api,
-      db,
-      query ? filterHotelsByQuery(cityHotels, query) : cityHotels,
-      params,
-      {
-        query,
-        stayContext,
-        matchSource: searchStrategy,
-        offset,
-        limit,
-        enableQueryRelevance: Boolean(query),
-        sectionType: "city_inventory_shortlist",
-      }
-    );
+    exposeCityInventorySection = cityHotels.length > 0;
+    if (cityHotels.length > 0) {
+      cityInventorySection = await buildRankedHotelSection(
+        api,
+        db,
+        query ? filterHotelsByQuery(cityHotels, query) : cityHotels,
+        params,
+        {
+          query,
+          stayContext,
+          matchSource: searchStrategy,
+          offset,
+          limit,
+          enableQueryRelevance: Boolean(query),
+          sectionType: "city_inventory_shortlist",
+        }
+      );
+    }
   } else if (source === "city_name") {
     const [rawCityCandidates, suggest] = await Promise.all([
       api.searchCitiesOnly(cityName).catch(() => []),
@@ -3921,31 +4031,99 @@ export async function searchHotels(api, db, params) {
       });
     }
 
-    const cityHotels = await api.searchHotelsByCity(resolvedCity.id);
-    const filteredCityHotels = query ? filterHotelsByQuery(cityHotels, query) : cityHotels;
-    const effectiveCityHotels =
-      query && filteredCityHotels.length > 0 ? filteredCityHotels : cityHotels;
+    let cityHotels = [];
+    let cityInventoryTimedOut = false;
+    let cityInventoryError = null;
+    try {
+      cityHotels = await api.searchHotelsByCity(resolvedCity.id);
+    } catch (error) {
+      if (!isLikelyTransientLiveError(error)) {
+        throw error;
+      }
 
-    searchStrategy =
-      query && filteredCityHotels.length > 0 ? "city_inventory_filtered" : "city_inventory";
-    exposeCityInventorySection = true;
-    cityInventorySection = await buildRankedHotelSection(api, db, effectiveCityHotels, params, {
-      query,
-      stayContext,
-      matchSource: searchStrategy,
-      offset,
-      limit,
-      enableQueryRelevance: Boolean(query),
-      sectionType: "city_inventory_shortlist",
-    });
-
-    if (query) {
-      hotelSeedRows = buildHotelCandidateSeedRows(
-        effectiveCityHotels,
-        query,
-        Math.max(candidateLimit, offset + limit)
+      cityInventoryTimedOut = true;
+      cityInventoryError = error;
+      liveWarnings.push(
+        `Live city inventory timed out for ${resolvedCity.name || cityName}: ${summarizeLiveError(error)}`
       );
-      hotelCandidates = buildHotelCandidateRows(hotelSeedRows, cityInventorySection, candidateLimit);
+    }
+
+    if (cityHotels.length > 0) {
+      const filteredCityHotels = query ? filterHotelsByQuery(cityHotels, query) : cityHotels;
+      const effectiveCityHotels =
+        query && filteredCityHotels.length > 0 ? filteredCityHotels : cityHotels;
+
+      searchStrategy =
+        query && filteredCityHotels.length > 0 ? "city_inventory_filtered" : "city_inventory";
+      exposeCityInventorySection = true;
+      cityInventorySection = await buildRankedHotelSection(api, db, effectiveCityHotels, params, {
+        query,
+        stayContext,
+        matchSource: searchStrategy,
+        offset,
+        limit,
+        enableQueryRelevance: Boolean(query),
+        sectionType: "city_inventory_shortlist",
+      });
+
+      if (query) {
+        hotelSeedRows = buildHotelCandidateSeedRows(
+          effectiveCityHotels,
+          query,
+          Math.max(candidateLimit, offset + limit)
+        );
+        hotelCandidates = buildHotelCandidateRows(hotelSeedRows, cityInventorySection, candidateLimit);
+      }
+    } else if (cityInventoryTimedOut) {
+      const groundingQuery = query || cityName;
+      const groundingRows = await searchGroundedHotelRows(db, {
+        query: groundingQuery,
+        city_name: resolvedCity.name || cityName,
+        limit: Math.max(limit + offset, candidateLimit, 8),
+      });
+      const groundingCandidates = groundingRows.map((row) => mapHotelGroundingSearchRow(row, groundingQuery));
+
+      if (groundingCandidates.length > 0) {
+        return buildGroundingRecoveryResult({
+          query: groundingQuery,
+          cityId,
+          cityName,
+          source,
+          offset,
+          limit,
+          stayContext,
+          cityCandidates,
+          hotelCandidates,
+          groundingCandidates,
+          params,
+          searchStrategy: "grounding_timeout_recovery",
+          summaryPrefix: `Live city inventory timed out for "${resolvedCity.name || cityName}", so the answer was recovered through grounding.`,
+          warningMessage:
+            `Live Bitvoya city inventory timed out while searching ${resolvedCity.name || cityName}; grounding was used as a temporary recovery layer.`,
+        });
+      }
+
+      cityInventorySection = {
+        section_type: "city_inventory_shortlist",
+        summary: `Live city inventory timed out for ${resolvedCity.name || cityName}, so no live hotel rows could be ranked yet.`,
+        applied_preferences: buildRoundedAppliedPreferences(
+          resolveHotelComparisonPreferences(params, stayContext || null)
+        ),
+        comparison_method: {
+          type: "live_city_inventory_timeout",
+          score_scale: "unavailable",
+          price_dimension: "unavailable",
+          note: "Live city inventory timed out before ranking could be completed.",
+        },
+        selection_guide: {},
+        count: 0,
+        total_matches: 0,
+        next_offset: null,
+        results: [],
+        ranked: [],
+      };
+      exposeCityInventorySection = true;
+      searchStrategy = "city_inventory_timeout";
     }
   } else {
     const [rawCityCandidates, suggest] = await Promise.all([
@@ -3992,16 +4170,26 @@ export async function searchHotels(api, db, params) {
       searchStrategy = "city_inventory_from_query";
       tasks.push(
         (async () => {
-          const cityHotels = await api.searchHotelsByCity(topCityCandidate.city_id);
-          cityInventorySection = await buildRankedHotelSection(api, db, cityHotels, params, {
-            query,
-            stayContext,
-            matchSource: searchStrategy,
-            offset,
-            limit,
-            enableQueryRelevance: false,
-            sectionType: "city_inventory_shortlist",
-          });
+          try {
+            const cityHotels = await api.searchHotelsByCity(topCityCandidate.city_id);
+            cityInventorySection = await buildRankedHotelSection(api, db, cityHotels, params, {
+              query,
+              stayContext,
+              matchSource: searchStrategy,
+              offset,
+              limit,
+              enableQueryRelevance: false,
+              sectionType: "city_inventory_shortlist",
+            });
+          } catch (error) {
+            if (!isLikelyTransientLiveError(error)) {
+              throw error;
+            }
+
+            liveWarnings.push(
+              `Live city inventory timed out for ${topCityCandidate.city_name || query}: ${summarizeLiveError(error)}`
+            );
+          }
         })()
       );
     }
@@ -4009,19 +4197,29 @@ export async function searchHotels(api, db, params) {
     if (hotelSeedRows.length > 0) {
       tasks.push(
         (async () => {
-          const directHotels = await loadHotelDetailsForSuggestions(
-            api,
-            hotelSeedRows.slice(0, Math.max(limit + offset, candidateLimit)).map((row) => row.hotel)
-          );
-          directHotelSection = await buildRankedHotelSection(api, db, directHotels, params, {
-            query,
-            stayContext,
-            matchSource: "hotel_suggestions",
-            offset,
-            limit,
-            enableQueryRelevance: true,
-            sectionType: "direct_hotel_matches",
-          });
+          try {
+            const directHotels = await loadHotelDetailsForSuggestions(
+              api,
+              hotelSeedRows.slice(0, Math.max(limit + offset, candidateLimit)).map((row) => row.hotel)
+            );
+            directHotelSection = await buildRankedHotelSection(api, db, directHotels, params, {
+              query,
+              stayContext,
+              matchSource: "hotel_suggestions",
+              offset,
+              limit,
+              enableQueryRelevance: true,
+              sectionType: "direct_hotel_matches",
+            });
+          } catch (error) {
+            if (!isLikelyTransientLiveError(error)) {
+              throw error;
+            }
+
+            liveWarnings.push(
+              `Live hotel detail expansion timed out for "${query}": ${summarizeLiveError(error)}`
+            );
+          }
         })()
       );
     }
@@ -4167,6 +4365,37 @@ export async function searchHotels(api, db, params) {
     hotelCandidates = buildHotelCandidateRows(hotelSeedRows, directHotelSection, candidateLimit);
   }
 
+  if (!cityInventorySection && !directHotelSection && liveWarnings.length > 0) {
+    const groundingQuery = query || cityName;
+    if (groundingQuery) {
+      const groundingRows = await searchGroundedHotelRows(db, {
+        query: groundingQuery,
+        city_name: cityName || null,
+        limit: Math.max(limit + offset, candidateLimit, 8),
+      });
+      const groundingCandidates = groundingRows.map((row) => mapHotelGroundingSearchRow(row, groundingQuery));
+
+      if (groundingCandidates.length > 0) {
+        return buildGroundingRecoveryResult({
+          query: groundingQuery,
+          cityId,
+          cityName,
+          source,
+          offset,
+          limit,
+          stayContext,
+          cityCandidates,
+          hotelCandidates,
+          groundingCandidates,
+          params,
+          searchStrategy: "grounding_timeout_recovery",
+          summaryPrefix: `Live Bitvoya inventory timed out while resolving "${groundingQuery}", so the answer was recovered through grounding.`,
+          warningMessage: liveWarnings[0],
+        });
+      }
+    }
+  }
+
   const activeSection =
     routeDecision.recommended_route === "direct_hotel"
       ? directHotelSection || cityInventorySection
@@ -4203,7 +4432,7 @@ export async function searchHotels(api, db, params) {
     );
   }
 
-  const warnings = [];
+  const warnings = [...liveWarnings];
   if (stayDateValidation?.status === "past_stay") {
     warnings.push(
       `The supplied stay dates (${stayContext.checkin} to ${stayContext.checkout}) are already in the past relative to the MCP server date ${stayDateValidation.server_today}.`
@@ -4216,9 +4445,14 @@ export async function searchHotels(api, db, params) {
     warnings.push("The supplied stay dates are not valid YYYY-MM-DD values.");
   }
 
+  const liveTimeoutOnly =
+    !(activeSection?.count || combinedResults.length > 0) &&
+    liveWarnings.length > 0;
   const status =
     activeSection?.count || combinedResults.length > 0 || cityCandidates.length > 0 || hotelCandidates.length > 0
-      ? "ok"
+      ? liveTimeoutOnly
+        ? "partial"
+        : "ok"
       : "not_found";
   const queryResolution = buildQueryResolution({
     source,
@@ -4239,24 +4473,30 @@ export async function searchHotels(api, db, params) {
         }
       : null);
   const summary =
-    source === "query"
-      ? `Resolved "${query}" into ${cityCandidates.length} city candidate(s) and ${hotelCandidates.length} hotel candidate(s). ` +
-        `Recommended route: ${routeDecision.recommended_route}.` +
-        (activeSection?.count
-          ? ` ${activeSection.summary}`
-          : "")
-      : source === "city_name" && query
-        ? activeSection?.count
-          ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and narrowed "${query}" to ${activeSection.count} ranked hotel result(s). Recommended route: ${routeDecision.recommended_route}. ${activeSection.summary}`
-          : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result matched "${query}".`
-      : cityInventorySection?.count
-        ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s). ${cityInventorySection.summary}`
-        : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
+    liveTimeoutOnly
+      ? source === "query"
+        ? `Live Bitvoya inventory timed out while resolving "${query}", so no live shortlist was produced yet.`
+        : `Live Bitvoya inventory timed out for ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, so no live shortlist was produced yet.`
+      : source === "query"
+        ? `Resolved "${query}" into ${cityCandidates.length} city candidate(s) and ${hotelCandidates.length} hotel candidate(s). ` +
+          `Recommended route: ${routeDecision.recommended_route}.` +
+          (activeSection?.count
+            ? ` ${activeSection.summary}`
+            : "")
+        : source === "city_name" && query
+          ? activeSection?.count
+            ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and narrowed "${query}" to ${activeSection.count} ranked hotel result(s). Recommended route: ${routeDecision.recommended_route}. ${activeSection.summary}`
+            : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result matched "${query}".`
+        : cityInventorySection?.count
+          ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s). ${cityInventorySection.summary}`
+          : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
   const agentBrief = buildSearchAgentBrief({
     queryResolution,
     results: activeSection?.results || [],
     selectionGuide: activeSection?.selection_guide || null,
     stayContext,
+    warnings: liveWarnings,
+    cityCandidates,
   });
 
   return buildAgenticToolResult({
@@ -4282,6 +4522,21 @@ export async function searchHotels(api, db, params) {
               "hotel_ids",
             ]),
           ]
+        : liveTimeoutOnly
+          ? [
+              buildNextTool("search_hotels", "Retry the same hotel search after the transient live timeout.", [
+                "query or city_name",
+                "checkin",
+                "checkout",
+              ]),
+              ...(query
+                ? [
+                    buildNextTool("search_hotels_grounding", "Use the grounding layer while live inventory is timing out.", [
+                      "query",
+                    ]),
+                  ]
+                : []),
+            ]
         : [
             buildNextTool("search_destination_suggestions", "Resolve the query through the mixed suggest layer when live candidates are thin.", [
               "query",
@@ -4552,7 +4807,7 @@ export async function getHotelDetail(api, db, { hotel_id }) {
 }
 
 export async function getHotelRooms(api, db, params, options = {}) {
-  const [hotel, rooms] = await Promise.all([
+  const [hotelResult, roomsResult] = await Promise.allSettled([
     api.getHotelDetail(params.hotel_id),
     api.getHotelRooms({
       hotelId: params.hotel_id,
@@ -4565,6 +4820,23 @@ export async function getHotelRooms(api, db, params, options = {}) {
       requestPrincipal: options.request_principal || null,
     }),
   ]);
+
+  if (hotelResult.status !== "fulfilled") {
+    throw hotelResult.reason;
+  }
+
+  const hotel = hotelResult.value;
+  let rooms = [];
+  let liveRoomsError = null;
+
+  if (roomsResult.status === "fulfilled") {
+    rooms = roomsResult.value;
+  } else if (isLikelyTransientLiveError(roomsResult.reason)) {
+    liveRoomsError = roomsResult.reason;
+    rooms = [];
+  } else {
+    throw roomsResult.reason;
+  }
 
   const hotelId = normalizeId(firstNonEmpty(hotel?.id, params.hotel_id));
   const cityId = normalizeId(hotel?.profiles?.CITY?.id);
@@ -4619,6 +4891,12 @@ export async function getHotelRooms(api, db, params, options = {}) {
     );
   }
 
+  if (liveRoomsError) {
+    noInventoryWarnings.push(
+      `Live room inventory timed out for ${enrichedHotel.hotel_name}: ${summarizeLiveError(liveRoomsError)}`
+    );
+  }
+
   const agentBrief = buildHotelRoomsAgentBrief({
     hotel: enrichedHotel,
     primaryRecommendation,
@@ -4636,7 +4914,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
 
   return buildAgenticToolResult({
     tool: "get_hotel_rooms",
-    status: normalizedRooms.length > 0 ? "ok" : "not_found",
+    status: normalizedRooms.length > 0 ? "ok" : liveRoomsError ? "partial" : "not_found",
     intent: "rate_selection",
     summary:
       normalizedRooms.length > 0
@@ -4646,6 +4924,12 @@ export async function getHotelRooms(api, db, params, options = {}) {
           (primaryRecommendation
             ? ` Top in-tool recommendation under ${rateRanking.applied_preferences.priority_profile}: ${primaryRecommendation.rate_name}.`
             : "")
+        : liveRoomsError
+          ? `Live room inventory timed out for ${enrichedHotel.hotel_name}.` +
+            (enrichedHotel?.bitvoya_value_brief?.primary_angle
+              ? ` Static value signal: ${compactText(enrichedHotel.bitvoya_value_brief.primary_angle, 180)}`
+              : "") +
+            ` Retry the live room lookup before concluding the hotel is unavailable.`
         : `No live room inventory was returned for ${enrichedHotel.hotel_name}.` +
           (enrichedHotel?.bitvoya_value_brief?.primary_angle
             ? ` Static value signal: ${compactText(enrichedHotel.bitvoya_value_brief.primary_angle, 180)}`
@@ -4670,6 +4954,20 @@ export async function getHotelRooms(api, db, params, options = {}) {
             ]),
             buildNextTool("get_hotel_detail", "Return to hotel-level fit and benefit context if needed.", ["hotel_id"]),
           ]
+        : liveRoomsError
+          ? [
+              buildNextTool("get_hotel_rooms", "Retry the live room inventory lookup for the same hotel and stay window.", [
+                "hotel_id",
+                "checkin",
+                "checkout",
+              ]),
+              buildNextTool("compare_hotels", "If the traveler is date-fixed, compare alternatives while the timed-out hotel is retried.", [
+                "hotel_ids",
+                "checkin",
+                "checkout",
+              ]),
+              buildNextTool("get_hotel_detail", "Keep the hotel in play via static fit and benefit context while live rooms are retried.", ["hotel_id"]),
+            ]
         : [
             buildNextTool("search_hotels", "Retry the search with a nearby future date range or pivot to alternative hotels in the same city.", [
               "query or city_name",
@@ -4704,7 +5002,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
     },
     data: {
       found: normalizedRooms.length > 0,
-      inventory_status: normalizedRooms.length > 0 ? "available" : "empty",
+      inventory_status: normalizedRooms.length > 0 ? "available" : liveRoomsError ? "timeout" : "empty",
       hotel: enrichedHotel,
       stay: {
         checkin: params.checkin,
@@ -4734,6 +5032,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
       total_room_options: asArray(rooms).length,
       room_limit_applied: params.room_limit,
       rate_limit_per_room: params.rate_limit_per_room,
+      live_inventory_error: liveRoomsError ? summarizeLiveError(liveRoomsError) : null,
       rooms: normalizedRooms,
     },
   });
