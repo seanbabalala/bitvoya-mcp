@@ -1374,6 +1374,8 @@ function normalizeRate(rate) {
   const taxTotal = roundNullableNumber(firstNonEmpty(rate?.taxPriceCny, rate?.taxPrice));
   const displayTotal = roundNullableNumber(firstNonEmpty(rate?.total_with_service_fee, supplierTotal));
   const explicitServiceFee = roundNullableNumber(rate?.service_fee?.amount);
+  const supplierCurrency = firstNonEmpty(rate?.priceUnit, rate?.service_fee?.currency);
+  const supplierPenaltyCurrency = firstNonEmpty(rate?.cancelPolicy?.unit);
   const derivedServiceFee =
     explicitServiceFee !== null
       ? explicitServiceFee
@@ -1392,7 +1394,8 @@ function normalizeRate(rate) {
     rate_name_en: firstNonEmpty(rate?.nameEn),
     breakfast: rate?.breakfast ?? null,
     pricing: {
-      currency: firstNonEmpty(rate?.priceUnit, rate?.service_fee?.currency, "CNY"),
+      currency: "CNY",
+      supplier_currency: supplierCurrency || null,
       supplier_total_cny: supplierTotal,
       supplier_tax_and_fee_cny: taxTotal,
       service_fee_cny: derivedServiceFee,
@@ -1405,7 +1408,8 @@ function normalizeRate(rate) {
     cancellation: {
       free_cancel_until: firstNonEmpty(rate?.cancelPolicy?.cancelTime),
       penalty_cny: roundNullableNumber(rate?.cancelPolicy?.penalty),
-      penalty_currency: firstNonEmpty(rate?.cancelPolicy?.unit),
+      penalty_currency: "CNY",
+      supplier_penalty_currency: supplierPenaltyCurrency || null,
       timezone: firstNonEmpty(rate?.cancelPolicy?.utc),
     },
     payment_options: {

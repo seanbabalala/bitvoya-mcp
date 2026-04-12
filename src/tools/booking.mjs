@@ -259,9 +259,10 @@ function buildGuestSnapshot({ guestPrimary, contact, companions, children, arriv
 }
 
 function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
+  const normalizedQuote = normalizeQuoteCurrencySemantics(quote);
   const paymentMethod = intent.payment_method;
   const isGuaranteeWithFee =
-    paymentMethod === "guarantee" && Number(quote?.pricing?.service_fee_cny || 0) > 0;
+    paymentMethod === "guarantee" && Number(normalizedQuote?.pricing?.service_fee_cny || 0) > 0;
 
   const guestPrimary = intent?.guest_snapshot?.guest_primary || {};
   const contact = intent?.guest_snapshot?.contact || {};
@@ -272,50 +273,53 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
   return {
     userInfo: intent.user_info || null,
     hotel: {
-      id: quote.hotel_snapshot.hotel_id,
-      name: quote.hotel_snapshot.hotel_name,
-      nameEn: quote.hotel_snapshot.hotel_name_en,
-      address: quote.hotel_snapshot.address,
-      image: quote.hotel_snapshot.hero_image_url,
-      telephone: quote.hotel_snapshot.telephone,
+      id: normalizedQuote.hotel_snapshot.hotel_id,
+      name: normalizedQuote.hotel_snapshot.hotel_name,
+      nameEn: normalizedQuote.hotel_snapshot.hotel_name_en,
+      address: normalizedQuote.hotel_snapshot.address,
+      image: normalizedQuote.hotel_snapshot.hero_image_url,
+      telephone: normalizedQuote.hotel_snapshot.telephone,
     },
     room: {
-      id: quote.room_snapshot.room_id,
-      name: quote.room_snapshot.room_name,
-      nameEn: quote.room_snapshot.room_name_en,
-      image: quote.room_snapshot.image_url,
+      id: normalizedQuote.room_snapshot.room_id,
+      name: normalizedQuote.room_snapshot.room_name,
+      nameEn: normalizedQuote.room_snapshot.room_name_en,
+      image: normalizedQuote.room_snapshot.image_url,
     },
     rateDetail: {
-      id: quote.rate_snapshot.rate_id,
-      name: quote.rate_snapshot.rate_name,
-      totalPriceCny: quote.pricing.supplier_total_cny,
-      taxPriceCny: quote.pricing.supplier_tax_and_fee_cny,
-      breakfast: quote.rate_snapshot.breakfast,
+      id: normalizedQuote.rate_snapshot.rate_id,
+      name: normalizedQuote.rate_snapshot.rate_name,
+      totalPriceCny: normalizedQuote.pricing.supplier_total_cny,
+      taxPriceCny: normalizedQuote.pricing.supplier_tax_and_fee_cny,
+      breakfast: normalizedQuote.rate_snapshot.breakfast,
       cancelPolicy: {
-        cancelTime: quote.cancellation_policy?.free_cancel_until || null,
-        penalty: quote.cancellation_policy?.penalty_cny || null,
-        unit: quote.cancellation_policy?.penalty_currency || quote.pricing.currency,
-        utc: quote.cancellation_policy?.timezone || null,
+        cancelTime: normalizedQuote.cancellation_policy?.free_cancel_until || null,
+        penalty: normalizedQuote.cancellation_policy?.penalty_cny || null,
+        unit: "CNY",
+        supplier_unit: normalizedQuote.cancellation_policy?.supplier_penalty_currency || null,
+        utc: normalizedQuote.cancellation_policy?.timezone || null,
       },
       paymentType: {
-        allowPayAll: quote.payment_options.prepay_supported ? 1 : 0,
-        allowCreditGuarantee: quote.payment_options.guarantee_supported ? 1 : 0,
+        allowPayAll: normalizedQuote.payment_options.prepay_supported ? 1 : 0,
+        allowCreditGuarantee: normalizedQuote.payment_options.guarantee_supported ? 1 : 0,
       },
-      currency: quote.pricing.currency,
+      currency: "CNY",
+      supplier_currency: normalizedQuote.pricing.supplier_currency || null,
       service_fee: {
-        amount: quote.pricing.service_fee_cny,
+        amount: normalizedQuote.pricing.service_fee_cny,
+        currency: "CNY",
       },
-      total_with_service_fee: quote.pricing.display_total_cny,
-      interests: quote.benefits_snapshot.interests,
-      promotions: quote.benefits_snapshot.promotions,
+      total_with_service_fee: normalizedQuote.pricing.display_total_cny,
+      interests: normalizedQuote.benefits_snapshot.interests,
+      promotions: normalizedQuote.benefits_snapshot.promotions,
     },
     searchParams: {
-      checkin: quote.stay.checkin,
-      checkout: quote.stay.checkout,
-      nights: quote.stay.nights,
-      rooms: quote.stay.room_num,
-      adults: quote.stay.adult_num,
-      children: quote.stay.child_num,
+      checkin: normalizedQuote.stay.checkin,
+      checkout: normalizedQuote.stay.checkout,
+      nights: normalizedQuote.stay.nights,
+      rooms: normalizedQuote.stay.room_num,
+      adults: normalizedQuote.stay.adult_num,
+      children: normalizedQuote.stay.child_num,
     },
     guestInfo: {
       "guest-first-name": guestPrimary.first_name,
@@ -367,10 +371,11 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
           ? { method: "prepay", name: "全款预付", description: "立即支付全额费用" }
           : { method: "guarantee", name: "信用卡担保", description: "到店支付" },
     },
-    currency: quote.pricing.currency,
-    interests: quote.benefits_snapshot.interests,
-    promotions: quote.benefits_snapshot.promotions,
-    serviceFeeAmount: quote.pricing.service_fee_cny || 0,
+    currency: "CNY",
+    supplier_currency: normalizedQuote.pricing.supplier_currency || null,
+    interests: normalizedQuote.benefits_snapshot.interests,
+    promotions: normalizedQuote.benefits_snapshot.promotions,
+    serviceFeeAmount: normalizedQuote.pricing.service_fee_cny || 0,
     requiresServiceFeePayment: isGuaranteeWithFee,
     flowType: isGuaranteeWithFee ? "guarantee_with_service_fee" : "standard",
     timestamp: intent.created_at,
@@ -378,23 +383,24 @@ function buildLegacySubmitPreview({ quote, intent, cardBinding = null }) {
 }
 
 function buildQuoteSummary(quote) {
+  const normalizedQuote = normalizeQuoteCurrencySemantics(quote);
   return {
-    quote_id: quote.quote_id,
-    created_at: quote.created_at,
-    expires_at: quote.expires_at,
-    hotel_id: quote.hotel_id,
-    room_id: quote.room_id,
-    rate_id: quote.rate_id,
-    stay: quote.stay,
-    pricing: quote.pricing,
-    payment_options: quote.payment_options,
-    payment_scenarios: quote.payment_scenarios,
-    cancellation_policy: quote.cancellation_policy,
-    benefits_snapshot: quote.benefits_snapshot,
-    validation_flags: quote.validation_flags,
-    hotel_snapshot: quote.hotel_snapshot,
-    room_snapshot: quote.room_snapshot,
-    rate_snapshot: quote.rate_snapshot,
+    quote_id: normalizedQuote.quote_id,
+    created_at: normalizedQuote.created_at,
+    expires_at: normalizedQuote.expires_at,
+    hotel_id: normalizedQuote.hotel_id,
+    room_id: normalizedQuote.room_id,
+    rate_id: normalizedQuote.rate_id,
+    stay: normalizedQuote.stay,
+    pricing: normalizedQuote.pricing,
+    payment_options: normalizedQuote.payment_options,
+    payment_scenarios: normalizedQuote.payment_scenarios,
+    cancellation_policy: normalizedQuote.cancellation_policy,
+    benefits_snapshot: normalizedQuote.benefits_snapshot,
+    validation_flags: normalizedQuote.validation_flags,
+    hotel_snapshot: normalizedQuote.hotel_snapshot,
+    room_snapshot: normalizedQuote.room_snapshot,
+    rate_snapshot: normalizedQuote.rate_snapshot,
   };
 }
 
@@ -409,6 +415,80 @@ function formatMoneyLabel(value, currency = "CNY") {
   }
 
   return `${rounded} ${currency || "CNY"}`;
+}
+
+function normalizeQuoteCurrencySemantics(quote) {
+  if (!quote || typeof quote !== "object" || Array.isArray(quote)) {
+    return quote;
+  }
+
+  const pricing = quote?.pricing && typeof quote.pricing === "object" ? quote.pricing : {};
+  const cancellation =
+    quote?.cancellation_policy && typeof quote.cancellation_policy === "object"
+      ? quote.cancellation_policy
+      : {};
+
+  return {
+    ...quote,
+    pricing: {
+      ...pricing,
+      currency: "CNY",
+      supplier_currency:
+        pricing?.supplier_currency ||
+        (pricing?.currency && pricing.currency !== "CNY" ? pricing.currency : null),
+    },
+    cancellation_policy: {
+      ...cancellation,
+      penalty_currency: "CNY",
+      supplier_penalty_currency:
+        cancellation?.supplier_penalty_currency ||
+        (cancellation?.penalty_currency && cancellation.penalty_currency !== "CNY"
+          ? cancellation.penalty_currency
+          : null),
+    },
+  };
+}
+
+function normalizeLegacySubmitPreviewCurrency(preview, quote = null) {
+  if (!preview || typeof preview !== "object" || Array.isArray(preview)) {
+    return preview;
+  }
+
+  const normalizedQuote = normalizeQuoteCurrencySemantics(quote);
+  const rateDetail = preview?.rateDetail && typeof preview.rateDetail === "object" ? preview.rateDetail : {};
+  const cancelPolicy =
+    rateDetail?.cancelPolicy && typeof rateDetail.cancelPolicy === "object" ? rateDetail.cancelPolicy : {};
+  const serviceFee =
+    rateDetail?.service_fee && typeof rateDetail.service_fee === "object" ? rateDetail.service_fee : {};
+
+  return {
+    ...preview,
+    currency: "CNY",
+    supplier_currency:
+      preview?.supplier_currency ||
+      normalizedQuote?.pricing?.supplier_currency ||
+      (preview?.currency && preview.currency !== "CNY" ? preview.currency : null),
+    rateDetail: {
+      ...rateDetail,
+      currency: "CNY",
+      supplier_currency:
+        rateDetail?.supplier_currency ||
+        normalizedQuote?.pricing?.supplier_currency ||
+        (rateDetail?.currency && rateDetail.currency !== "CNY" ? rateDetail.currency : null),
+      cancelPolicy: {
+        ...cancelPolicy,
+        unit: "CNY",
+        supplier_unit:
+          cancelPolicy?.supplier_unit ||
+          normalizedQuote?.cancellation_policy?.supplier_penalty_currency ||
+          (cancelPolicy?.unit && cancelPolicy.unit !== "CNY" ? cancelPolicy.unit : null),
+      },
+      service_fee: {
+        ...serviceFee,
+        currency: "CNY",
+      },
+    },
+  };
 }
 
 function decodeBase64UrlUtf8(value) {
@@ -1755,8 +1835,11 @@ function resolveNextActions(intent) {
 
 function normalizeIntentState(intent) {
   const basePaymentSessionStatus = isPaymentSessionRequired(intent) ? "not_created" : "not_required";
+  const quoteSnapshot = normalizeQuoteCurrencySemantics(intent?.quote_snapshot || null);
   const normalized = {
     ...intent,
+    quote_snapshot: quoteSnapshot,
+    legacy_submit_preview: normalizeLegacySubmitPreviewCurrency(intent?.legacy_submit_preview || null, quoteSnapshot),
     backend_order: {
       submit_status: "not_submitted",
       order_id: null,
@@ -1774,11 +1857,13 @@ function normalizeIntentState(intent) {
       session_id: null,
       session_url: null,
       payment_type: isPaymentSessionRequired(intent) ? intent?.payment_requirement : null,
-      currency: intent?.quote_snapshot?.pricing?.currency || "CNY",
-      amount: isPaymentSessionRequired(intent) ? intent?.amount_due_now_cny || 0 : 0,
-      created_at: null,
-      response_snapshot: null,
       ...(intent?.payment_session || {}),
+      currency: quoteSnapshot?.pricing?.currency || "CNY",
+      amount:
+        intent?.payment_session?.amount ??
+        (isPaymentSessionRequired(intent) ? intent?.amount_due_now_cny || 0 : 0),
+      created_at: intent?.payment_session?.created_at || null,
+      response_snapshot: intent?.payment_session?.response_snapshot || null,
     },
     live_booking_details: intent?.live_booking_details || null,
   };
@@ -2313,7 +2398,7 @@ export async function prepareBookingQuote(api, db, store, config, params, option
 
 export async function createBookingIntent(store, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
-  const quote = store.getQuote(params.quote_id);
+  const quote = normalizeQuoteCurrencySemantics(store.getQuote(params.quote_id));
   const requestAccountBinding = buildAccountBinding(options);
 
   if (!quote) {

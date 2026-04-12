@@ -114,6 +114,7 @@ export async function runDiscoverySmoke() {
     assert.equal(hotelRooms.data?.found, true);
     assert.equal(hotelRoomsRecovered.data?.found, true);
     assert.equal(hotelRoomsRecovered.data?.identity_resolution?.resolution_status, "remapped");
+    assert.equal(hotelRoomsRecovered.data?.rooms?.[0]?.rates?.[0]?.pricing?.currency, "CNY");
     assert.ok(
       /Langham/i.test(String(hotelRoomsRecovered.data?.hotel?.hotel_name_en || "")) ||
         /朗廷/.test(String(hotelRoomsRecovered.data?.hotel?.hotel_name || ""))

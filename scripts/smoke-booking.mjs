@@ -160,6 +160,35 @@ export async function runBookingSmoke() {
       room_num: 1,
     });
 
+    const storedQuote = store.getQuote(quote.data?.quote?.quote_id);
+    store.createQuote({
+      ...storedQuote,
+      quote_id: "quote_legacy_currency_test",
+      pricing: {
+        ...(storedQuote?.pricing || {}),
+        currency: "AUD",
+        supplier_currency: null,
+      },
+      cancellation_policy: {
+        ...(storedQuote?.cancellation_policy || {}),
+        penalty_currency: "AUD",
+        supplier_penalty_currency: null,
+      },
+    });
+
+    const correctedLegacyCurrencyIntent = await createBookingIntent(store, {
+      quote_id: "quote_legacy_currency_test",
+      payment_method: "guarantee",
+      guest_primary: {
+        first_name: "Smoke",
+        last_name: "Guest",
+      },
+      contact: {
+        email: "smoke@example.com",
+        phone: "13800000000",
+      },
+    });
+
     const intent = await createBookingIntent(store, {
       quote_id: quote.data?.quote?.quote_id,
       payment_method: "guarantee",
@@ -198,6 +227,7 @@ export async function runBookingSmoke() {
 
     for (const payload of [
       quote,
+      correctedLegacyCurrencyIntent,
       staleIntent,
       staleQuoteState,
       intent,
@@ -219,6 +249,13 @@ export async function runBookingSmoke() {
     assert.equal(submitted.status, "ok");
     assert.equal(paymentSession.status, "ok");
     assert.equal(refreshed.status, "ok");
+    assert.equal(correctedLegacyCurrencyIntent.status, "ok");
+    assert.equal(correctedLegacyCurrencyIntent.data?.intent?.quote_snapshot?.pricing?.currency, "CNY");
+    assert.equal(correctedLegacyCurrencyIntent.data?.intent?.legacy_submit_preview?.currency, "CNY");
+    assert.equal(quote.data?.quote?.pricing?.currency, "CNY");
+    assert.equal(intent.data?.intent?.quote_snapshot?.pricing?.currency, "CNY");
+    assert.equal(intent.data?.intent?.legacy_submit_preview?.currency, "CNY");
+    assert.equal(intent.data?.intent?.legacy_submit_preview?.rateDetail?.currency, "CNY");
     assert.equal(intent.data?.execution_state?.status, "awaiting_card");
     assert.equal(cardAttached.data?.execution_state?.status, "ready_to_submit");
     assert.equal(submitted.data?.order_overview?.order_id, "order_test_001");
@@ -237,6 +274,10 @@ export async function runBookingSmoke() {
       stale_get_booking_state: {
         summary: staleQuoteState.summary,
         requested_quote: staleQuoteState.data?.requested_quote || null,
+      },
+      corrected_legacy_currency_intent: {
+        summary: correctedLegacyCurrencyIntent.summary,
+        legacy_preview_currency: correctedLegacyCurrencyIntent.data?.intent?.legacy_submit_preview?.currency || null,
       },
       prepare_booking_quote: quote.summary,
       create_booking_intent: {
