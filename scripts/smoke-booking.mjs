@@ -123,6 +123,28 @@ export async function runBookingSmoke() {
       "Stale quote selection should return current live alternatives."
     );
 
+    const staleIntent = await createBookingIntent(store, {
+      quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
+      payment_method: "guarantee",
+      guest_primary: {
+        first_name: "Smoke",
+        last_name: "Guest",
+      },
+      contact: {
+        email: "smoke@example.com",
+        phone: "13800000000",
+      },
+    });
+
+    const staleQuoteState = await getBookingState(store, {
+      quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
+    });
+
+    assert.equal(staleIntent.status, "partial");
+    assert.equal(staleIntent.data?.requested_quote?.quote_id_origin, "frontend_or_foreign_quote_id");
+    assert.equal(staleQuoteState.status, "partial");
+    assert.equal(staleQuoteState.data?.requested_quote?.quote_id_origin, "frontend_or_foreign_quote_id");
+
     const quote = await prepareBookingQuote(api, db, store, config, {
       hotel_id: "875",
       room_id: String(recommendedRate.room_id),
@@ -172,6 +194,8 @@ export async function runBookingSmoke() {
 
     for (const payload of [
       quote,
+      staleIntent,
+      staleQuoteState,
       intent,
       cardAttached,
       quoteState,
@@ -201,6 +225,14 @@ export async function runBookingSmoke() {
       stale_prepare_booking_quote: {
         summary: staleSelection.summary,
         first_live_option: staleSelection.data?.valid_live_selections?.[0] || null,
+      },
+      stale_create_booking_intent: {
+        summary: staleIntent.summary,
+        requested_quote: staleIntent.data?.requested_quote || null,
+      },
+      stale_get_booking_state: {
+        summary: staleQuoteState.summary,
+        requested_quote: staleQuoteState.data?.requested_quote || null,
       },
       prepare_booking_quote: quote.summary,
       create_booking_intent: {

@@ -411,6 +411,127 @@ function formatMoneyLabel(value, currency = "CNY") {
   return `${rounded} ${currency || "CNY"}`;
 }
 
+function classifyQuoteId(quoteId) {
+  const normalized = normalizeId(quoteId);
+  if (!normalized) {
+    return {
+      quote_id: null,
+      origin: "missing_quote_id",
+      is_runtime_store_id: false,
+    };
+  }
+
+  if (/^quote_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
+    return {
+      quote_id: normalized,
+      origin: "runtime_store_quote_id",
+      is_runtime_store_id: true,
+    };
+  }
+
+  if (/^quote_[A-Za-z0-9_-]+$/.test(normalized)) {
+    return {
+      quote_id: normalized,
+      origin: "frontend_or_foreign_quote_id",
+      is_runtime_store_id: false,
+    };
+  }
+
+  return {
+    quote_id: normalized,
+    origin: "unknown_quote_id_format",
+    is_runtime_store_id: false,
+  };
+}
+
+function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
+  const executionMode = normalizeExecutionMode(options);
+  const quoteIdInfo = classifyQuoteId(params?.quote_id);
+  const paymentMethod = normalizeId(params?.payment_method);
+  const isForeignQuote = quoteIdInfo.origin === "frontend_or_foreign_quote_id";
+  const isRuntimeQuote = quoteIdInfo.origin === "runtime_store_quote_id";
+  const summary =
+    isForeignQuote
+      ? `Requested quote_id ${quoteIdInfo.quote_id} is not a current MCP server-owned quote. It looks like a frontend or foreign-system quote token, so ${tool} cannot continue from it directly. Prepare a fresh live quote first.`
+      : isRuntimeQuote
+        ? `Requested quote_id ${quoteIdInfo.quote_id} is not available in the current MCP runtime store. It may already be expired or may have been minted by another deployment.`
+        : `Requested quote_id ${quoteIdInfo.quote_id || "N/A"} is not available for booking execution in the current MCP runtime. Prepare a fresh live quote first.`;
+  const presenterLines = [
+    "Open with: The requested quote_id is not usable for booking execution in the current MCP runtime.",
+    isForeignQuote
+      ? "Angle: This looks like a frontend or foreign-system quote token, not the short-lived server-owned quote_id minted by prepare_booking_quote."
+      : "Angle: Current MCP quote_ids are short-lived and runtime-scoped, so missing ids should be treated as expired-or-foreign rather than silently reused.",
+    paymentMethod
+      ? `Decision split: Mint a fresh quote first, then retry create_booking_intent with payment_method ${paymentMethod}.`
+      : "Decision split: Mint a fresh quote first, then retry create_booking_intent with the intended payment_method.",
+    "Ask next: Confirm the current live hotel_id / room_id / rate_id selection before re-creating the quote.",
+  ];
+
+  return buildAgenticToolResult({
+    tool,
+    status: "partial",
+    intent: tool === "get_booking_state" ? "booking_state_inspection" : "booking_intent_execution",
+    summary,
+    recommended_next_tools: [
+      buildNextTool("get_hotel_rooms", "Reload live room inventory and current ids before creating a fresh quote.", [
+        "hotel_id",
+        "checkin",
+        "checkout",
+      ]),
+      buildNextTool("prepare_booking_quote", "Mint a fresh short-lived server-owned quote before creating booking intent.", [
+        "hotel_id",
+        "room_id",
+        "rate_id",
+        "checkin",
+        "checkout",
+      ]),
+    ],
+    warnings: [
+      "create_booking_intent only accepts active server-owned quote_id values minted by prepare_booking_quote in this MCP deployment.",
+      ...(isForeignQuote
+        ? ["Do not pass frontend page quote tokens or foreign-system quote ids directly into create_booking_intent."]
+        : []),
+    ],
+    pricing_notes: [
+      "Quote-scoped pricing is only trustworthy while the MCP server-owned quote is still active.",
+    ],
+    selection_hints: [
+      paymentMethod
+        ? `After preparing a fresh quote, reuse payment_method ${paymentMethod} with the same guest/contact payload.`
+        : "After preparing a fresh quote, retry create_booking_intent with the intended payment_method and the same guest/contact payload.",
+      "Do not assume old quote_id values still map to current live room/rate inventory.",
+      ...(executionMode === EXECUTOR_HANDOFF_MODE
+        ? [
+            "In executor_handoff mode, refresh the quote first, then create a new intent and continue on Bitvoya-hosted secure checkout.",
+          ]
+        : []),
+    ],
+    data: {
+      found: false,
+      entity: "quote",
+      reason: "quote_unavailable",
+      requested_quote: {
+        quote_id: quoteIdInfo.quote_id,
+        quote_id_origin: quoteIdInfo.origin,
+        payment_method: paymentMethod,
+      },
+      booking_readiness: {
+        status: "needs_fresh_quote",
+      },
+      agent_brief: {
+        mode: "quote_unavailable",
+        booking_readiness: {
+          status: "needs_fresh_quote",
+        },
+        recommended_opening: "The requested quote_id is not usable for booking execution in the current MCP runtime.",
+        recommended_angle: presenterLines[1],
+        next_question: "Confirm the current live hotel_id / room_id / rate_id selection before re-creating the quote.",
+        presenter_lines: presenterLines,
+      },
+    },
+  });
+}
+
 function rateMatchesRequestedId(rate, requestedRateId) {
   const requestedId = normalizeId(requestedRateId);
   if (!requestedId) {
@@ -2066,11 +2187,11 @@ export async function createBookingIntent(store, params, options = {}) {
   const requestAccountBinding = buildAccountBinding(options);
 
   if (!quote) {
-    throw new Error("Quote not found or already expired.");
+    return buildMissingQuoteRecoveryResult("create_booking_intent", params, { execution_mode: executionMode });
   }
 
   if (quote.expires_at_ms <= Date.now()) {
-    throw new Error("Quote has expired. Please prepare a fresh booking quote.");
+    return buildMissingQuoteRecoveryResult("create_booking_intent", params, { execution_mode: executionMode });
   }
 
   validateQuotePaymentSupport(quote, params.payment_method);
@@ -2464,31 +2585,7 @@ export async function getBookingState(store, params, options = {}) {
   if (params.quote_id) {
     const quote = store.getQuote(params.quote_id);
     if (!quote) {
-      return buildAgenticToolResult({
-        tool: "get_booking_state",
-        status: "not_found",
-        intent: "booking_state_inspection",
-        summary: "Booking quote not found or already expired.",
-        recommended_next_tools: [
-          buildNextTool("get_hotel_rooms", "Reload live room inventory before creating a new quote.", [
-            "hotel_id",
-            "checkin",
-            "checkout",
-          ]),
-          buildNextTool("prepare_booking_quote", "Create a fresh quote for the selected room/rate if the previous quote is gone.", [
-            "hotel_id",
-            "room_id",
-            "rate_id",
-            "checkin",
-            "checkout",
-          ]),
-        ],
-        data: {
-          found: false,
-          entity: "quote",
-          reason: "Booking quote not found or already expired.",
-        },
-      });
+      return buildMissingQuoteRecoveryResult("get_booking_state", params, options);
     }
 
     return buildQuoteStateResult("get_booking_state", quote, options);
