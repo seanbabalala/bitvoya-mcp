@@ -1020,6 +1020,208 @@ function buildHotelStaticStory(hotel, grounding, cityGrounding) {
   };
 }
 
+function stripHotelNameSuffix(value, hotelName) {
+  const normalizedValue = String(value || "").trim();
+  const normalizedHotelName = String(hotelName || "").trim();
+
+  if (!normalizedValue || !normalizedHotelName) {
+    return normalizedValue || null;
+  }
+
+  for (const separator of [" - ", " – ", " — ", "-", "–", "—", "－"]) {
+    const suffix = `${separator}${normalizedHotelName}`;
+    if (normalizedValue.endsWith(suffix)) {
+      return normalizedValue.slice(0, -suffix.length).trim();
+    }
+  }
+
+  return normalizedValue;
+}
+
+function isSpecificBenefitLabel(value) {
+  return /(\d|住|美元|折|早餐|升级|接送|餐饮|spa|credit|礼遇|礼宾|付)/i.test(String(value || ""));
+}
+
+function buildBenefitDisplayLabel(item, hotelName = null) {
+  const rawName = compactText(stripHotelNameSuffix(item?.name, hotelName), 60);
+  const rawTag = compactText(item?.tag, 36);
+
+  if (rawName && isSpecificBenefitLabel(rawName)) {
+    return rawName;
+  }
+
+  if (rawTag && !["其他", "权益", "福利", "礼遇"].includes(rawTag)) {
+    return rawTag;
+  }
+
+  return rawName || rawTag || null;
+}
+
+function buildHotelBenefitBrief(hotel) {
+  const topInterests = asArray(hotel?.membership_benefits?.top_interests);
+  const topPromotions = asArray(hotel?.membership_benefits?.top_promotions);
+  const topSignals = uniqueTexts(
+    [
+      ...topInterests.map((item) => buildBenefitDisplayLabel(item, hotel?.hotel_name)),
+      ...topPromotions.map((item) => buildBenefitDisplayLabel(item, hotel?.hotel_name)),
+    ],
+    4
+  );
+  const totalSignalCount =
+    (hotel?.membership_benefits?.interest_count || 0) + (hotel?.membership_benefits?.promotion_count || 0);
+
+  return {
+    has_benefits: totalSignalCount > 0,
+    total_signal_count: totalSignalCount,
+    interest_count: hotel?.membership_benefits?.interest_count || 0,
+    promotion_count: hotel?.membership_benefits?.promotion_count || 0,
+    top_signals: topSignals,
+    strongest_signal: topSignals[0] || null,
+    headline:
+      totalSignalCount > 0
+        ? topSignals.length > 0
+          ? `Attached member-value signals include ${topSignals.join(", ")}.`
+          : `${totalSignalCount} member-value signal(s) are attached before booking.`
+        : null,
+  };
+}
+
+function buildHotelLocationBrief(hotel) {
+  const accessHighlights = uniqueTexts(
+    [
+      hotel?.grounding_excerpt?.area_character,
+      hotel?.grounding_excerpt?.transport_summary,
+      ...(hotel?.static_story?.access_highlights || []),
+      hotel?.city_grounding_excerpt?.stay_area_recommendation,
+    ],
+    4
+  );
+
+  return {
+    headline: compactText(
+      firstNonEmpty(
+        hotel?.grounding_excerpt?.area_character,
+        hotel?.grounding_excerpt?.transport_summary,
+        hotel?.static_story?.access_highlights?.[0],
+        hotel?.static_story?.positioning
+      ),
+      180
+    ),
+    area_character: hotel?.grounding_excerpt?.area_character || null,
+    transport_summary: hotel?.grounding_excerpt?.transport_summary || null,
+    access_highlights: accessHighlights,
+    city_context: hotel?.city_grounding_excerpt?.stay_area_recommendation || null,
+  };
+}
+
+function formatDistanceMeters(distanceMeters) {
+  const numericDistance = asNullableNumber(distanceMeters);
+  if (!Number.isFinite(numericDistance)) {
+    return null;
+  }
+
+  if (numericDistance >= 1000) {
+    return `${roundScore(numericDistance / 1000, 1)} km`;
+  }
+
+  return `${Math.round(numericDistance)} m`;
+}
+
+function buildPoiAccessLabel(poi) {
+  const travelTime = asNullableNumber(poi?.estimated_travel_time_minutes);
+
+  return [poi?.travel_mode || null, Number.isFinite(travelTime) ? `${Math.round(travelTime)} min` : null, formatDistanceMeters(poi?.distance_meters)]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function humanizeIdentifier(value) {
+  return String(value || "")
+    .split("_")
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+function buildPoiDisplayName(poi) {
+  const relationLabel = humanizeIdentifier(poi?.relation_type);
+  const typeLabel = humanizeIdentifier(poi?.canonical_poi_type);
+
+  return firstNonEmpty(
+    poi?.canonical_poi_name,
+    [poi?.district_name, relationLabel].filter(Boolean).join(" "),
+    relationLabel,
+    typeLabel,
+    poi?.district_name || null
+  );
+}
+
+function buildNearbyPoiBrief(nearbyPois = []) {
+  const topPois = asArray(nearbyPois)
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((poi) => ({
+      name: buildPoiDisplayName(poi),
+      canonical_name: poi?.canonical_poi_name || null,
+      type: poi?.canonical_poi_type || null,
+      relation_type: poi?.relation_type || null,
+      district_name: poi?.district_name || null,
+      access: buildPoiAccessLabel(poi),
+      best_for: asArray(poi?.best_for).slice(0, 3),
+      practical_note: compactText(poi?.practical_note, 120),
+    }));
+
+  return {
+    count: asArray(nearbyPois).filter(Boolean).length,
+    headline:
+      topPois.length > 0
+        ? `Nearby anchors include ${uniqueTexts(topPois.map((poi) => poi.name).filter(Boolean), 3).join(", ")}.`
+        : null,
+    top_pois: topPois,
+  };
+}
+
+function buildBitvoyaValueBrief(hotel, nearbyPois = []) {
+  const benefitBrief = hotel?.benefit_brief || buildHotelBenefitBrief(hotel);
+  const locationBrief = hotel?.location_brief || buildHotelLocationBrief(hotel);
+  const poiBrief = hotel?.nearby_pois_brief || buildNearbyPoiBrief(nearbyPois);
+  const valueSignals = [];
+
+  if (benefitBrief?.has_benefits) {
+    valueSignals.push("attached member benefits");
+  }
+  if (locationBrief?.headline) {
+    valueSignals.push("grounded area/access context");
+  }
+  if ((poiBrief?.count || 0) > 0) {
+    valueSignals.push("nearby POI anchors");
+  }
+
+  return {
+    summary:
+      valueSignals.length > 0
+        ? `Bitvoya can explain this stay through ${valueSignals.join(", ")}, not price alone.`
+        : "Bitvoya adds hotel-fit context beyond raw room pricing.",
+    primary_angle: firstNonEmpty(
+      benefitBrief?.headline,
+      hotel?.static_story?.positioning,
+      locationBrief?.headline,
+      poiBrief?.headline,
+      hotel?.grounding_excerpt?.luxury_fit
+    ),
+    selling_points: uniqueTexts(
+      [
+        benefitBrief?.headline,
+        hotel?.static_story?.positioning,
+        hotel?.grounding_excerpt?.luxury_fit,
+        locationBrief?.headline,
+        poiBrief?.headline,
+      ],
+      4
+    ),
+  };
+}
+
 function buildSearchPrice(priceInfo, stayContext) {
   if (!priceInfo) return null;
 
@@ -1045,7 +1247,7 @@ function normalizeHotelSummary(
   const interests = asArray(hotel?.profiles?.INTEREST).map(mapTag);
   const promotions = asArray(hotel?.profiles?.PROMOTION).map(mapTag);
 
-  return {
+  const normalized = {
     hotel_id: normalizeId(hotel?.id),
     hotel_name: firstNonEmpty(hotel?.name, grounding?.hotel_name),
     hotel_name_en: firstNonEmpty(hotel?.nameEn),
@@ -1102,6 +1304,12 @@ function normalizeHotelSummary(
     grounding_excerpt: buildGroundingExcerpt(grounding),
     city_grounding_excerpt: buildCityGroundingExcerpt(cityGrounding),
   };
+
+  normalized.benefit_brief = buildHotelBenefitBrief(normalized);
+  normalized.location_brief = buildHotelLocationBrief(normalized);
+  normalized.bitvoya_value_brief = buildBitvoyaValueBrief(normalized);
+
+  return normalized;
 }
 
 function normalizeHotelDetailPayload(hotel) {
@@ -1669,6 +1877,9 @@ function buildHotelPriorityReason(hotel, liveRateSummary, topDimension) {
       }
       return null;
     case "perks":
+      if (hotel?.benefit_brief?.headline) {
+        return hotel.benefit_brief.headline;
+      }
       if (hotel?.membership_benefits?.has_member_benefits) {
         return `${hotel.membership_benefits.interest_count + hotel.membership_benefits.promotion_count} member-benefit signals are attached before booking.`;
       }
@@ -1677,6 +1888,7 @@ function buildHotelPriorityReason(hotel, liveRateSummary, topDimension) {
       return hotel?.grounding_excerpt?.luxury_fit || null;
     case "location":
       return firstNonEmpty(
+        hotel?.location_brief?.headline,
         hotel?.grounding_excerpt?.transport_summary,
         hotel?.grounding_excerpt?.area_character,
         hotel?.city_grounding_excerpt?.stay_area_recommendation
@@ -1773,6 +1985,10 @@ function buildHotelTradeoffs(hotel, liveRateSummary = null) {
 function buildHotelStrengths(hotel, liveRateSummary = null) {
   const strengths = [];
 
+  if (hotel?.benefit_brief?.headline) {
+    strengths.push(hotel.benefit_brief.headline);
+  }
+
   if (hotel?.static_story?.positioning) {
     strengths.push(hotel.static_story.positioning);
   }
@@ -1795,6 +2011,14 @@ function buildHotelStrengths(hotel, liveRateSummary = null) {
 
   if (hotel?.grounding_excerpt?.transport_summary) {
     strengths.push(hotel.grounding_excerpt.transport_summary);
+  }
+
+  if (hotel?.location_brief?.headline) {
+    strengths.push(hotel.location_brief.headline);
+  }
+
+  if (hotel?.nearby_pois_brief?.headline) {
+    strengths.push(hotel.nearby_pois_brief.headline);
   }
 
   strengths.push(...asArray(hotel?.static_story?.traveler_fit_highlights).slice(0, 2));
@@ -1889,6 +2113,10 @@ function buildHotelComparisonRow({ hotel, decision_brief, live_rate_summary, app
     best_for: decision_brief.best_for,
     quality_signals: hotel.quality_signals,
     membership_benefits: hotel.membership_benefits,
+    benefit_brief: hotel.benefit_brief || null,
+    location_brief: hotel.location_brief || null,
+    nearby_pois_brief: hotel.nearby_pois_brief || null,
+    bitvoya_value_brief: hotel.bitvoya_value_brief || null,
     applied_preferences: {
       priority_profile: applied_preferences?.priority_profile || "balanced",
       payment_preference: applied_preferences?.payment_preference || "any",
@@ -2208,6 +2436,48 @@ export async function getHotelGroundingSnapshotMap(db, sourceHotelIds) {
   return new Map(rows.map((row) => [String(row.source_hotel_id), mapHotelSnapshotRow(row)]));
 }
 
+async function getNearbyPoiSnapshotMap(db, sourceHotelIds, limitPerHotel = 4) {
+  const ids = Array.from(
+    new Set(
+      sourceHotelIds
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db.query(
+    `
+      SELECT *
+      FROM vw_tripwiki_hotel_nearby_poi
+      WHERE source_hotel_id IN (${toPlaceholders(ids.length)})
+      ORDER BY
+        source_hotel_id ASC,
+        COALESCE(priority_tier, 999) ASC,
+        COALESCE(distance_meters, 999999) ASC,
+        COALESCE(rank_no, 999) ASC
+    `,
+    ids
+  );
+
+  const grouped = new Map();
+
+  for (const row of rows) {
+    const hotelId = String(row.source_hotel_id);
+    const bucket = grouped.get(hotelId) || [];
+
+    if (bucket.length < limitPerHotel) {
+      bucket.push(mapNearbyPoiRow(row));
+      grouped.set(hotelId, bucket);
+    }
+  }
+
+  return grouped;
+}
+
 async function buildHotelSummaryBatch(db, hotels, { priceMap = new Map(), stayContext = null, matchSource = null } = {}) {
   const uniqueHotels = uniqueBy(asArray(hotels), (hotel) => normalizeId(hotel?.id));
   const hotelIds = uniqueHotels.map((hotel) => String(hotel.id));
@@ -2355,6 +2625,9 @@ function buildSearchShortlistGuide(ranked) {
           score: topPick.decision_brief?.score ?? null,
           choose_reasons: topPick.decision_brief?.choose_reasons || [],
           best_for: topPick.decision_brief?.best_for || [],
+          benefit_brief: topPick.hotel?.benefit_brief || null,
+          location_brief: topPick.hotel?.location_brief || null,
+          bitvoya_value_brief: topPick.hotel?.bitvoya_value_brief || null,
         }
       : null,
     best_value: bestValue
@@ -2371,6 +2644,8 @@ function buildSearchShortlistGuide(ranked) {
           benefit_count:
             (strongestBenefits.hotel?.membership_benefits?.interest_count || 0) +
             (strongestBenefits.hotel?.membership_benefits?.promotion_count || 0),
+          top_signals: strongestBenefits.hotel?.benefit_brief?.top_signals || [],
+          headline: strongestBenefits.hotel?.benefit_brief?.headline || null,
         }
       : null,
     strongest_static_story: strongestStaticStory
@@ -2378,6 +2653,7 @@ function buildSearchShortlistGuide(ranked) {
           hotel_id: strongestStaticStory.hotel.hotel_id,
           hotel_name: strongestStaticStory.hotel.hotel_name,
           positioning: strongestStaticStory.hotel?.static_story?.positioning || null,
+          bitvoya_value_brief: strongestStaticStory.hotel?.bitvoya_value_brief || null,
         }
       : null,
     strongest_location_story: strongestLocationStory
@@ -2385,6 +2661,7 @@ function buildSearchShortlistGuide(ranked) {
           hotel_id: strongestLocationStory.hotel.hotel_id,
           hotel_name: strongestLocationStory.hotel.hotel_name,
           access_highlights: strongestLocationStory.hotel?.static_story?.access_highlights || [],
+          location_brief: strongestLocationStory.hotel?.location_brief || null,
         }
       : null,
   };
@@ -2513,19 +2790,45 @@ async function buildRankedHotelSection(api, db, rawHotels, params, options = {})
   const totalMatches = rankedSearch.ranked.length;
   const offset = options.offset || 0;
   const limit = options.limit || totalMatches;
-  const results = rankedSearch.ranked.slice(offset, offset + limit).map((item, index) => ({
-    ...item.hotel,
-    search_rank: offset + index + 1,
-    shortlist_score: item.decision_brief?.score ?? null,
-    query_match: item.query_match,
-    decision_brief: item.decision_brief,
-  }));
+  const pagedRanked = rankedSearch.ranked.slice(offset, offset + limit);
+  const nearbyPoiMap = await getNearbyPoiSnapshotMap(
+    db,
+    pagedRanked.map((item) => item?.hotel?.hotel_id),
+    4
+  );
+  const results = pagedRanked.map((item, index) => {
+    const nearbyPois = nearbyPoiMap.get(item.hotel.hotel_id) || [];
+    const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
+    const enrichedHotel = {
+      ...item.hotel,
+      nearby_pois_brief: nearbyPoisBrief,
+      bitvoya_value_brief: buildBitvoyaValueBrief(
+        {
+          ...item.hotel,
+          nearby_pois_brief: nearbyPoisBrief,
+        },
+        nearbyPois
+      ),
+    };
+
+    return {
+      ...enrichedHotel,
+      search_rank: offset + index + 1,
+      shortlist_score: item.decision_brief?.score ?? null,
+      query_match: item.query_match,
+      decision_brief: buildHotelDecisionBrief(enrichedHotel, null, item.score_breakdown),
+    };
+  });
+  const topResult = results[0] || null;
 
   return {
     section_type: options.sectionType || "search_section",
     summary:
       results.length > 0
-        ? `Ranked ${results.length} hotel result(s). Top pick: ${rankedSearch.ranked[0]?.hotel?.hotel_name || "N/A"}.`
+        ? `Ranked ${results.length} hotel result(s). Top pick: ${topResult?.hotel_name || "N/A"}.` +
+          (topResult
+            ? ` ${compactText(firstNonEmpty(topResult?.bitvoya_value_brief?.primary_angle, topResult?.location_brief?.headline), 180) || ""}`
+            : "")
         : "No ranked hotel results were produced.",
     applied_preferences: rankedSearch.applied_preferences,
     comparison_method: rankedSearch.comparison_method,
@@ -3594,14 +3897,14 @@ export async function searchHotels(api, db, params) {
       ? `Resolved "${query}" into ${cityCandidates.length} city candidate(s) and ${hotelCandidates.length} hotel candidate(s). ` +
         `Recommended route: ${routeDecision.recommended_route}.` +
         (activeSection?.count
-          ? ` Expanded ${activeSection.count} ranked hotel result(s) from the recommended track.`
+          ? ` ${activeSection.summary}`
           : "")
       : source === "city_name" && query
         ? activeSection?.count
-          ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and narrowed "${query}" to ${activeSection.count} ranked hotel result(s). Recommended route: ${routeDecision.recommended_route}.`
+          ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and narrowed "${query}" to ${activeSection.count} ranked hotel result(s). Recommended route: ${routeDecision.recommended_route}. ${activeSection.summary}`
           : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result matched "${query}".`
       : cityInventorySection?.count
-        ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s).`
+        ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s). ${cityInventorySection.summary}`
         : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
 
   return buildAgenticToolResult({
@@ -3638,6 +3941,7 @@ export async function searchHotels(api, db, params) {
       "Use get_hotel_rooms for checkout-relevant display_total_cny and service_fee_cny.",
     ],
     selection_hints: [
+      "Start with results[].bitvoya_value_brief, benefit_brief, location_brief, and nearby_pois_brief before falling back to generic price-only narration.",
       "Read query_resolution.recommended_route first, then inspect both city_candidates and hotel_candidates when the query is ambiguous.",
       "Use city_inventory_shortlist when the input behaves like a destination search.",
       "Use direct_hotel_matches when the input behaves like a specific-property search.",
@@ -3777,12 +4081,14 @@ export async function getHotelGrounding(db, identity, poiLimit) {
 
   const hotel = mapHotelRow(row);
   const nearbyPois = poiRows.map(mapNearbyPoiRow);
+  const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
 
   return buildAgenticToolResult({
     tool: "get_hotel_grounding",
     status: "ok",
     intent: "hotel_grounding",
-    summary: `Loaded grounded hotel card for ${hotel.hotel_name} with ${nearbyPois.length} nearby POIs and traveler-fit notes.`,
+    summary: `Loaded grounded hotel card for ${hotel.hotel_name} with ${nearbyPois.length} nearby POIs and traveler-fit notes.` +
+      (nearbyPoisBrief?.headline ? ` ${nearbyPoisBrief.headline}` : ""),
     recommended_next_tools: [
       buildNextTool("get_hotel_detail", "Pair grounding with the live hotel detail payload.", ["hotel_id"]),
       buildNextTool("get_hotel_rooms", "Move from hotel fit assessment into live rate selection.", [
@@ -3800,6 +4106,14 @@ export async function getHotelGrounding(db, identity, poiLimit) {
     data: {
       hotel,
       nearby_pois: nearbyPois,
+      nearby_pois_brief: nearbyPoisBrief,
+      bitvoya_static_brief: {
+        summary: "Bitvoya grounding clarifies hotel fit, area context, and nearby anchors before rate search.",
+        selling_points: uniqueTexts(
+          [hotel?.why_stay_here, hotel?.hotel_luxury_fit_reason, hotel?.hotel_transport_summary, nearbyPoisBrief?.headline],
+          4
+        ),
+      },
     },
   });
 }
@@ -3819,14 +4133,30 @@ export async function getHotelDetail(api, db, { hotel_id }) {
     cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
     matchSource: "hotel_detail",
   });
+  const nearbyPois = asArray(groundingPayload?.data?.nearby_pois || groundingPayload?.nearby_pois);
+  const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
+  const enrichedHotel = {
+    ...normalizedHotel,
+    nearby_pois_brief: nearbyPoisBrief,
+    bitvoya_value_brief: buildBitvoyaValueBrief(
+      {
+        ...normalizedHotel,
+        nearby_pois_brief: nearbyPoisBrief,
+      },
+      nearbyPois
+    ),
+  };
   const hotelDetail = normalizeHotelDetailPayload(hotel);
-  const decisionBrief = buildHotelDecisionBrief(normalizedHotel);
+  const decisionBrief = buildHotelDecisionBrief(enrichedHotel);
 
   return buildAgenticToolResult({
     tool: "get_hotel_detail",
     status: "ok",
     intent: "hotel_evaluation",
-    summary: `Loaded live hotel detail for ${normalizedHotel.hotel_name}. Member benefits: ${normalizedHotel.membership_benefits.interest_count} interests, ${normalizedHotel.membership_benefits.promotion_count} promotions.`,
+    summary: `Loaded live hotel detail for ${enrichedHotel.hotel_name}.` +
+      (enrichedHotel?.benefit_brief?.headline ? ` ${enrichedHotel.benefit_brief.headline}` : "") +
+      (nearbyPoisBrief?.count ? ` Bitvoya grounding adds ${nearbyPoisBrief.count} nearby POI anchor(s).` : "") +
+      (enrichedHotel?.location_brief?.headline ? ` ${enrichedHotel.location_brief.headline}` : ""),
     recommended_next_tools: [
       buildNextTool("get_hotel_rooms", "Check live room and rate inventory before any booking step.", [
         "hotel_id",
@@ -3840,21 +4170,26 @@ export async function getHotelDetail(api, db, { hotel_id }) {
       buildNextTool("get_hotel_media", "Fetch gallery assets for visual grounding.", ["hotel_id"]),
     ],
     selection_hints: [
+      "Start with benefit_brief, location_brief, nearby_pois_brief, and bitvoya_value_brief before reducing the hotel to price or star rating.",
       "Use hotel.membership_benefits for a compact benefit summary.",
       "Use hotel_detail.benefits for the normalized underlying benefit arrays.",
       "Use decision_brief.choose_reasons and tradeoffs for agent-facing recommendation text.",
     ],
     entity_refs: {
-      hotel_ids: [normalizedHotel.hotel_id],
-      city_ids: [normalizedHotel?.city?.source_city_id],
-      tripwiki_hotel_ids: [normalizedHotel?.grounding_excerpt?.tripwiki_hotel_id],
-      tripwiki_city_ids: [normalizedHotel?.city_grounding_excerpt?.tripwiki_city_id],
+      hotel_ids: [enrichedHotel.hotel_id],
+      city_ids: [enrichedHotel?.city?.source_city_id],
+      tripwiki_hotel_ids: [enrichedHotel?.grounding_excerpt?.tripwiki_hotel_id],
+      tripwiki_city_ids: [enrichedHotel?.city_grounding_excerpt?.tripwiki_city_id],
     },
     data: {
       found: true,
-      hotel: normalizedHotel,
+      hotel: enrichedHotel,
       hotel_detail: hotelDetail,
       decision_brief: decisionBrief,
+      benefit_brief: enrichedHotel.benefit_brief,
+      location_brief: enrichedHotel.location_brief,
+      nearby_pois_brief: nearbyPoisBrief,
+      bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
       grounding: groundingPayload?.data || groundingPayload,
       city_grounding_excerpt: cityId ? buildCityGroundingExcerpt(cityGroundingMap.get(cityId) || null) : null,
     },
@@ -3879,9 +4214,10 @@ export async function getHotelRooms(api, db, params, options = {}) {
   const hotelId = normalizeId(firstNonEmpty(hotel?.id, params.hotel_id));
   const cityId = normalizeId(hotel?.profiles?.CITY?.id);
 
-  const [groundingMap, cityGroundingMap] = await Promise.all([
+  const [groundingMap, cityGroundingMap, nearbyPoiMap] = await Promise.all([
     getHotelGroundingSnapshotMap(db, hotelId ? [hotelId] : []),
     getCityGroundingSnapshotMap(db, cityId ? [cityId] : []),
+    getNearbyPoiSnapshotMap(db, hotelId ? [hotelId] : [], 6),
   ]);
 
   const normalizedRooms = asArray(rooms)
@@ -3893,6 +4229,19 @@ export async function getHotelRooms(api, db, params, options = {}) {
     cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
     matchSource: "hotel_rooms",
   });
+  const nearbyPois = hotelId ? nearbyPoiMap.get(hotelId) || [] : [];
+  const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
+  const enrichedHotel = {
+    ...normalizedHotel,
+    nearby_pois_brief: nearbyPoisBrief,
+    bitvoya_value_brief: buildBitvoyaValueBrief(
+      {
+        ...normalizedHotel,
+        nearby_pois_brief: nearbyPoisBrief,
+      },
+      nearbyPois
+    ),
+  };
   const flattenedRates = flattenRoomRates(normalizedRooms);
   const cheapestRate = sortByDisplayTotal(flattenedRates)[0];
   const rateRanking = rankRatesWithPreferences(flattenedRates, params);
@@ -3921,11 +4270,16 @@ export async function getHotelRooms(api, db, params, options = {}) {
     intent: "rate_selection",
     summary:
       normalizedRooms.length > 0
-        ? `Loaded ${normalizedRooms.length} room options for ${normalizedHotel.hotel_name}. Cheapest current display total is ${cheapestRate?.rate?.pricing?.display_total_cny ?? "N/A"} CNY.` +
+        ? `Loaded ${normalizedRooms.length} room options for ${enrichedHotel.hotel_name}.` +
+          (enrichedHotel?.benefit_brief?.headline ? ` ${enrichedHotel.benefit_brief.headline}` : "") +
+          ` Cheapest current display total is ${cheapestRate?.rate?.pricing?.display_total_cny ?? "N/A"} CNY.` +
           (primaryRecommendation
             ? ` Top in-tool recommendation under ${rateRanking.applied_preferences.priority_profile}: ${primaryRecommendation.rate_name}.`
             : "")
-        : `No live room inventory was returned for ${normalizedHotel.hotel_name}.` +
+        : `No live room inventory was returned for ${enrichedHotel.hotel_name}.` +
+          (enrichedHotel?.bitvoya_value_brief?.primary_angle
+            ? ` Static value signal: ${compactText(enrichedHotel.bitvoya_value_brief.primary_angle, 180)}`
+            : "") +
           (dateValidation.status === "past_stay"
             ? ` The requested stay dates (${params.checkin} to ${params.checkout}) are already in the past relative to the MCP server date ${dateValidation.server_today}.`
             : ""),
@@ -3964,23 +4318,24 @@ export async function getHotelRooms(api, db, params, options = {}) {
       "supplier_total_cny and service_fee_cny stay explicit so agents can reason about guarantee vs prepay.",
     ],
     selection_hints: [
+      "Start with hotel.benefit_brief, hotel.location_brief, hotel.nearby_pois_brief, and hotel.bitvoya_value_brief before collapsing the answer into pure rate math.",
       "Choose room_id from rooms[].room_id and rate_id from rooms[].rates[].rate_id.",
       "Do not infer final payable totals from search-stage prices once live rates are available.",
       "Use selection_guide when the agent needs a fast cheapest vs flexible vs benefits-based recommendation.",
       "Pass priority_profile, payment_preference, require_free_cancellation, or prefer_benefits when the agent already knows traveler intent.",
     ],
     entity_refs: {
-      hotel_ids: [normalizedHotel.hotel_id],
-      city_ids: [normalizedHotel?.city?.source_city_id],
+      hotel_ids: [enrichedHotel.hotel_id],
+      city_ids: [enrichedHotel?.city?.source_city_id],
       room_ids: normalizedRooms.map((room) => room.room_id),
       rate_ids: normalizedRooms.flatMap((room) => asArray(room.rates).map((rate) => rate.rate_id)),
-      tripwiki_hotel_ids: [normalizedHotel?.grounding_excerpt?.tripwiki_hotel_id],
-      tripwiki_city_ids: [normalizedHotel?.city_grounding_excerpt?.tripwiki_city_id],
+      tripwiki_hotel_ids: [enrichedHotel?.grounding_excerpt?.tripwiki_hotel_id],
+      tripwiki_city_ids: [enrichedHotel?.city_grounding_excerpt?.tripwiki_city_id],
     },
     data: {
       found: normalizedRooms.length > 0,
       inventory_status: normalizedRooms.length > 0 ? "available" : "empty",
-      hotel: normalizedHotel,
+      hotel: enrichedHotel,
       stay: {
         checkin: params.checkin,
         checkout: params.checkout,
@@ -3990,6 +4345,10 @@ export async function getHotelRooms(api, db, params, options = {}) {
       },
       date_validation: dateValidation,
       pricing_notice: buildRoomPricingNotice(),
+      benefit_brief: enrichedHotel.benefit_brief,
+      location_brief: enrichedHotel.location_brief,
+      nearby_pois_brief: nearbyPoisBrief,
+      bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
       applied_preferences: buildRoundedAppliedPreferences(rateRanking.applied_preferences),
       comparison_method: rateRanking.comparison_method,
       selection_guide: {
@@ -4220,6 +4579,9 @@ export async function compareHotels(api, db, params, options = {}) {
     summary:
       ranked.length > 0
         ? `Compared ${ranked.length} hotels under the ${appliedPreferences.priority_profile} profile. Top pick: ${ranked[0].hotel.hotel_name}.` +
+          (ranked[0].hotel?.bitvoya_value_brief?.primary_angle
+            ? ` ${compactText(ranked[0].hotel.bitvoya_value_brief.primary_angle, 180)}`
+            : "") +
           (cheapestLive ? ` Lowest live display total: ${cheapestLive.hotel.hotel_name}.` : "") +
           (bestBenefits ? ` Strongest benefits: ${bestBenefits.hotel.hotel_name}.` : "")
         : "No hotel comparison result could be generated.",
@@ -4239,6 +4601,7 @@ export async function compareHotels(api, db, params, options = {}) {
       ? ["Live comparison used room/rate inventory when available for each compared hotel."]
       : ["No stay dates were supplied, so comparison relies on static context and search-stage price signals only."],
     selection_hints: [
+      "Read ranked_hotels[].benefit_brief, location_brief, nearby_pois_brief, and bitvoya_value_brief before defaulting to price-only explanations.",
       "Use compare_hotels to shortlist properties; use compare_rates to decide within one property.",
       "Change priority_profile when the agent should optimize price, perks, luxury, location, flexibility, or low due-now outlay.",
       "Use payment_preference, require_free_cancellation, and prefer_benefits to harden the ranking for the traveler intent.",
