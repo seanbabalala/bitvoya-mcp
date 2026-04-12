@@ -737,7 +737,28 @@ function buildHotelCandidateSeedRows(rawHotels, query, limit = 5) {
 }
 
 function resolveSearchRoute({ source, cityCandidates = [], hotelCandidates = [] }) {
-  if (source === "city_id" || source === "city_name") {
+  if (source === "city_id") {
+    return {
+      detected_intent: "destination",
+      recommended_route: "city_inventory",
+      confidence: "high",
+      reason: "Explicit city input was provided, so destination inventory is the primary route.",
+    };
+  }
+
+  if (source === "city_name") {
+    const topHotel = hotelCandidates[0] || null;
+    const hotelScore = topHotel?.match?.relevance_score ?? 0;
+
+    if (topHotel && hotelScore >= 88) {
+      return {
+        detected_intent: "hotel",
+        recommended_route: "direct_hotel",
+        confidence: hotelScore >= 96 ? "high" : "medium",
+        reason: `Explicit city input narrowed the search area, but hotel-identity signals point most clearly to "${topHotel.hotel_name}".`,
+      };
+    }
+
     return {
       detected_intent: "destination",
       recommended_route: "city_inventory",
@@ -2936,6 +2957,50 @@ function buildRoomPricingNotice() {
   };
 }
 
+function parseDateOnlyToUtcMs(value) {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Date.parse(`${normalized}T00:00:00Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildStayDateValidation(checkin, checkout) {
+  const now = new Date();
+  const serverToday = now.toISOString().slice(0, 10);
+  const todayMs = Date.parse(`${serverToday}T00:00:00Z`);
+  const checkinMs = parseDateOnlyToUtcMs(checkin);
+  const checkoutMs = parseDateOnlyToUtcMs(checkout);
+  const validFormat = checkinMs !== null && checkoutMs !== null;
+  const chronological = validFormat ? checkoutMs > checkinMs : null;
+  const nights =
+    validFormat && chronological ? Math.round((checkoutMs - checkinMs) / 86400000) : null;
+  const checkinInPast = validFormat ? checkinMs < todayMs : null;
+  const checkoutInPast = validFormat ? checkoutMs <= todayMs : null;
+
+  return {
+    server_today: serverToday,
+    valid_format: validFormat,
+    chronological,
+    nights,
+    checkin_in_past: checkinInPast,
+    checkout_in_past_or_today: checkoutInPast,
+    status: !validFormat
+      ? "invalid_format"
+      : !chronological
+        ? "invalid_range"
+        : checkinInPast
+          ? "past_stay"
+          : "future_or_current_stay",
+  };
+}
+
 function summarizeTopLabels(items, field, limit = 3) {
   return asArray(items)
     .map((item) => item?.[field])
@@ -3204,18 +3269,32 @@ export async function searchHotels(api, db, params) {
       });
     }
 
-    searchStrategy = "city_inventory";
-    exposeCityInventorySection = true;
     const cityHotels = await api.searchHotelsByCity(resolvedCity.id);
-    cityInventorySection = await buildRankedHotelSection(api, db, cityHotels, params, {
+    const filteredCityHotels = query ? filterHotelsByQuery(cityHotels, query) : cityHotels;
+    const effectiveCityHotels =
+      query && filteredCityHotels.length > 0 ? filteredCityHotels : cityHotels;
+
+    searchStrategy =
+      query && filteredCityHotels.length > 0 ? "city_inventory_filtered" : "city_inventory";
+    exposeCityInventorySection = true;
+    cityInventorySection = await buildRankedHotelSection(api, db, effectiveCityHotels, params, {
       query,
       stayContext,
       matchSource: searchStrategy,
       offset,
       limit,
-      enableQueryRelevance: false,
+      enableQueryRelevance: Boolean(query),
       sectionType: "city_inventory_shortlist",
     });
+
+    if (query) {
+      hotelSeedRows = buildHotelCandidateSeedRows(
+        effectiveCityHotels,
+        query,
+        Math.max(candidateLimit, offset + limit)
+      );
+      hotelCandidates = buildHotelCandidateRows(hotelSeedRows, cityInventorySection, candidateLimit);
+    }
   } else {
     const [rawCityCandidates, suggest] = await Promise.all([
       api.searchCitiesOnly(query).catch(() => []),
@@ -3501,6 +3580,10 @@ export async function searchHotels(api, db, params) {
         (activeSection?.count
           ? ` Expanded ${activeSection.count} ranked hotel result(s) from the recommended track.`
           : "")
+      : source === "city_name" && query
+        ? activeSection?.count
+          ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and narrowed "${query}" to ${activeSection.count} ranked hotel result(s). Recommended route: ${routeDecision.recommended_route}.`
+          : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result matched "${query}".`
       : cityInventorySection?.count
         ? `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId} and returned ${cityInventorySection.count} ranked hotel result(s).`
         : `Resolved city input to ${cityCandidates[0]?.city_name || resolvedCity?.name || cityId}, but no ranked hotel result was produced.`;
@@ -3797,6 +3880,22 @@ export async function getHotelRooms(api, db, params, options = {}) {
   const rateRanking = rankRatesWithPreferences(flattenedRates, params);
   const selectionGuide = rateRanking.guide;
   const primaryRecommendation = rateRanking.ranked_rows[0] || null;
+  const dateValidation = buildStayDateValidation(params.checkin, params.checkout);
+  const noInventoryWarnings = [];
+
+  if (!dateValidation.valid_format) {
+    noInventoryWarnings.push(
+      "The supplied stay dates are not valid YYYY-MM-DD values, so live inventory lookup may be unreliable."
+    );
+  } else if (!dateValidation.chronological) {
+    noInventoryWarnings.push(
+      `The stay range is invalid because checkout ${params.checkout} is not after checkin ${params.checkin}.`
+    );
+  } else if (dateValidation.checkin_in_past) {
+    noInventoryWarnings.push(
+      `The requested stay is in the past relative to the MCP server date ${dateValidation.server_today} (checkin ${params.checkin}, checkout ${params.checkout}).`
+    );
+  }
 
   return buildAgenticToolResult({
     tool: "get_hotel_rooms",
@@ -3808,7 +3907,10 @@ export async function getHotelRooms(api, db, params, options = {}) {
           (primaryRecommendation
             ? ` Top in-tool recommendation under ${rateRanking.applied_preferences.priority_profile}: ${primaryRecommendation.rate_name}.`
             : "")
-        : `No live room inventory was returned for ${normalizedHotel.hotel_name}.`,
+        : `No live room inventory was returned for ${normalizedHotel.hotel_name}.` +
+          (dateValidation.status === "past_stay"
+            ? ` The requested stay dates (${params.checkin} to ${params.checkout}) are already in the past relative to the MCP server date ${dateValidation.server_today}.`
+            : ""),
     recommended_next_tools:
       normalizedRooms.length > 0
         ? [
@@ -3826,7 +3928,19 @@ export async function getHotelRooms(api, db, params, options = {}) {
             ]),
             buildNextTool("get_hotel_detail", "Return to hotel-level fit and benefit context if needed.", ["hotel_id"]),
           ]
-        : [],
+        : [
+            buildNextTool("search_hotels", "Retry the search with a nearby future date range or pivot to alternative hotels in the same city.", [
+              "query or city_name",
+              "checkin",
+              "checkout",
+            ]),
+            buildNextTool("compare_hotels", "Compare same-city alternatives for the same stay window when one property has no live inventory.", [
+              "hotel_ids",
+              "checkin",
+              "checkout",
+            ]),
+          ],
+    warnings: normalizedRooms.length > 0 ? [] : noInventoryWarnings,
     pricing_notes: [
       "display_total_cny is the guest-facing total aligned with current frontend semantics.",
       "supplier_total_cny and service_fee_cny stay explicit so agents can reason about guarantee vs prepay.",
@@ -3846,7 +3960,8 @@ export async function getHotelRooms(api, db, params, options = {}) {
       tripwiki_city_ids: [normalizedHotel?.city_grounding_excerpt?.tripwiki_city_id],
     },
     data: {
-      found: true,
+      found: normalizedRooms.length > 0,
+      inventory_status: normalizedRooms.length > 0 ? "available" : "empty",
       hotel: normalizedHotel,
       stay: {
         checkin: params.checkin,
@@ -3855,6 +3970,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
         child_num: params.child_num || 0,
         room_num: params.room_num || 1,
       },
+      date_validation: dateValidation,
       pricing_notice: buildRoomPricingNotice(),
       applied_preferences: buildRoundedAppliedPreferences(rateRanking.applied_preferences),
       comparison_method: rateRanking.comparison_method,
