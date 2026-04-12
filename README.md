@@ -2,11 +2,11 @@
 
 Hosted MCP for luxury hotel discovery, hotel evaluation, booking quote preparation, and secure checkout handoff.
 
-This repository is the MCP-facing layer for Bitvoya. It is the public integration surface, not the Bitvoya website or legacy booking backend.
+Bitvoya MCP is the public integration surface for using Bitvoya inventory and hotel intelligence inside agent workflows.
 
-## Hosted Connection
+## Quick Start
 
-Travelers and agent users connect to the Bitvoya-hosted MCP, not to a self-managed database.
+Most users do not need to self-host anything.
 
 Connection flow:
 
@@ -14,12 +14,13 @@ Connection flow:
 2. Open Dashboard -> Connect Agent:
    - `https://bitvoya.com/dashboard/agent-keys`
 3. Create a named agent connection
-4. Paste the hosted MCP values into your MCP client:
-   - endpoint: `https://bitvoya.com/api/mcp`
-   - auth header: `Authorization: Bearer <your_agent_key>`
-5. Test a discovery tool such as `search_hotels`
+4. Paste the hosted MCP endpoint into your client:
+   - `https://bitvoya.com/api/mcp`
+5. Add your header:
+   - `Authorization: Bearer <your_agent_key>`
+6. Test a tool such as `search_hotels`
 
-Example client shape:
+Example configuration:
 
 ```json
 {
@@ -31,44 +32,34 @@ Example client shape:
 }
 ```
 
-Important:
+## What You Get
 
-- Bitvoya calls this flow `Connect Agent`
-- the generated credential is a revocable agent key
-- website login credentials and MCP credentials are not the same thing
-- multiple agent keys under one Bitvoya user still map to the same Bitvoya account history
+Bitvoya MCP is designed for agentic travel discovery and booking preparation.
 
-## What Agents Can Do
+- live luxury hotel search
+- hotel detail, media, and nearby context
+- room and rate comparison
+- explicit pricing semantics
+- booking quote preparation
+- booking intent creation
+- secure checkout handoff back to Bitvoya
 
-The hosted MCP is designed for agent-friendly hotel discovery and booking preparation.
-
-Core discovery tools:
+Core tools:
 
 - `search_hotels`
 - `get_hotel_detail`
 - `get_hotel_rooms`
 - `compare_hotels`
 - `compare_rates`
-
-Grounding and enrichment tools:
-
-- `search_cities`
-- `get_city_grounding`
-- `get_hotel_grounding`
-- `get_nearby_hotels`
-- `get_hotel_media`
-
-Booking-preparation tools:
-
 - `prepare_booking_quote`
 - `create_booking_intent`
 - `get_booking_state`
 
-## Booking Boundary
+## Booking Model
 
 Bitvoya intentionally keeps sensitive execution on Bitvoya-hosted surfaces.
 
-External agents can:
+Agents can:
 
 - discover hotels and rates
 - compare benefits, cancellation rules, and pricing
@@ -76,15 +67,15 @@ External agents can:
 - create a booking intent
 - poll booking state
 
-External agents do not directly own:
+Agents do not directly own:
 
 - raw card entry
-- payment session execution
+- payment execution
 - final supplier-facing booking submission
 
 For public usage, card collection and payment completion happen on a Bitvoya-hosted secure checkout surface.
 
-## Pricing Semantics
+## Price Fields
 
 Agents should present price fields carefully.
 
@@ -96,20 +87,19 @@ Agents should present price fields carefully.
   - `display_total_cny`
 - `display_total_cny` is the guest-facing total aligned with current Bitvoya product behavior
 
+## Important Notes
+
+- Bitvoya calls this flow `Connect Agent`
+- the generated credential is a revocable agent key
+- website login credentials and MCP credentials are not the same thing
+- multiple agent keys under one Bitvoya user still map to the same Bitvoya account history
+- normal users connect to the hosted MCP and do not need direct database or server configuration
+
 ## Public Reference Docs
 
 - security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
 - secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
 
-## Local Contribution
+## Development
 
-```bash
-cd /root/bitvoya_mcp
-npm install
-npm run start
-```
-
-For local stdio development, point the MCP client at:
-
-- command: `node`
-- args: `["/root/bitvoya_mcp/src/server.mjs"]`
+Maintainers and contributors can use [DEVELOPMENT.md](/root/bitvoya_mcp/DEVELOPMENT.md).
