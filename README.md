@@ -101,14 +101,6 @@ Agents should present price fields carefully.
 - security and access model: [docs/public/SECURITY_MODEL.md](/root/bitvoya_mcp/docs/public/SECURITY_MODEL.md)
 - secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](/root/bitvoya_mcp/docs/public/SECURE_HANDOFF.md)
 
-## Operator Docs
-
-These are for Bitvoya operators and maintainers, not normal hosted MCP users.
-
-- runtime configuration: [docs/operators/CONFIGURATION.md](/root/bitvoya_mcp/docs/operators/CONFIGURATION.md)
-- live deployment: [docs/operators/DEPLOYMENT.md](/root/bitvoya_mcp/docs/operators/DEPLOYMENT.md)
-- booking implementation notes: [docs/operators/BOOKING_DESIGN.md](/root/bitvoya_mcp/docs/operators/BOOKING_DESIGN.md)
-
 ## Local Contribution
 
 ```bash
@@ -121,5 +113,3 @@ For local stdio development, point the MCP client at:
 
 - command: `node`
 - args: `["/root/bitvoya_mcp/src/server.mjs"]`
-
-Local operator setup, remote gateway config, and live release flow are documented in the operator docs above.
