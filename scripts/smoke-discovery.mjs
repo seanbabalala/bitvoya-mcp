@@ -46,6 +46,20 @@ export async function runDiscoverySmoke() {
       rate_limit_per_room: 4,
       priority_profile: "balanced",
     });
+    const hotelRoomsRecovered = await getHotelRooms(api, db, {
+      hotel_id: "external-langham-melbourne",
+      hotel_name: "The Langham Melbourne",
+      city_name: "Melbourne",
+      checkin: "2026-04-14",
+      checkout: "2026-04-17",
+      adult_num: 2,
+      child_num: 0,
+      room_num: 1,
+      room_limit: 2,
+      rate_limit_per_room: 4,
+      priority_profile: "balanced",
+      prefer_benefits: true,
+    });
     const comparedHotels = await compareHotels(api, db, {
       hotel_ids: ["875", "882"],
       checkin: "2026-05-01",
@@ -69,7 +83,7 @@ export async function runDiscoverySmoke() {
       prefer_benefits: true,
     });
 
-    for (const payload of [hotelDetail, hotelSearchEnglish, hotelSearchCluster, hotelSearchGroundingFallback, hotelSearchAreaRecovery, hotelRooms, comparedHotels, comparedRates]) {
+    for (const payload of [hotelDetail, hotelSearchEnglish, hotelSearchCluster, hotelSearchGroundingFallback, hotelSearchAreaRecovery, hotelRooms, hotelRoomsRecovered, comparedHotels, comparedRates]) {
       agenticToolOutputSchema.parse(payload);
     }
 
@@ -98,6 +112,12 @@ export async function runDiscoverySmoke() {
       "semantic_grounding"
     );
     assert.equal(hotelRooms.data?.found, true);
+    assert.equal(hotelRoomsRecovered.data?.found, true);
+    assert.equal(hotelRoomsRecovered.data?.identity_resolution?.resolution_status, "remapped");
+    assert.ok(
+      /Langham/i.test(String(hotelRoomsRecovered.data?.hotel?.hotel_name_en || "")) ||
+        /朗廷/.test(String(hotelRoomsRecovered.data?.hotel?.hotel_name || ""))
+    );
     assert.ok((hotelRooms.data?.selection_guide?.top_recommendations || []).length > 0);
     assert.ok((comparedHotels.data?.ranked_hotels || []).length >= 2);
     assert.ok((comparedRates.data?.compared_rates || []).length > 0);
@@ -148,6 +168,22 @@ export async function runDiscoverySmoke() {
             },
           }
         : { summary: hotelRooms.summary },
+      hotel_rooms_recovered: hotelRoomsRecovered.data?.selection_guide?.recommended_rate
+        ? {
+            summary: hotelRoomsRecovered.summary,
+            identity_resolution: hotelRoomsRecovered.data?.identity_resolution
+              ? {
+                  input_hotel_id: hotelRoomsRecovered.data.identity_resolution.input_hotel_id,
+                  resolved_hotel_id: hotelRoomsRecovered.data.identity_resolution.resolved_hotel_id,
+                  resolution_status: hotelRoomsRecovered.data.identity_resolution.resolution_status,
+                }
+              : null,
+            recommended_rate: {
+              rate_id: hotelRoomsRecovered.data.selection_guide.recommended_rate.rate_id,
+              rate_name: hotelRoomsRecovered.data.selection_guide.recommended_rate.rate_name,
+            },
+          }
+        : { summary: hotelRoomsRecovered.summary },
       compare_hotels: {
         summary: comparedHotels.summary,
         top_pick: comparedHotels.data?.comparison_highlights?.top_pick,

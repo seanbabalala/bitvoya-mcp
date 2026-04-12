@@ -2,6 +2,14 @@ import { createHttpClient } from "./http.mjs";
 import { asArray, uniqueBy } from "./format.mjs";
 import { buildSignedPrincipalHeaders } from "./remote-auth.mjs";
 
+function createBitvoyaApiError(message, { endpoint, response = null, businessCode = null } = {}) {
+  const error = new Error(message);
+  error.bitvoyaEndpoint = endpoint || null;
+  error.bitvoyaResponse = response;
+  error.bitvoyaBusinessCode = businessCode;
+  return error;
+}
+
 function unwrapEnvelope(response, endpoint) {
   const success =
     response?.success === true ||
@@ -10,11 +18,40 @@ function unwrapEnvelope(response, endpoint) {
     response?.msg === "SUCCESS";
 
   if (!response || !success) {
-    throw new Error(
+    throw createBitvoyaApiError(
       response?.error ||
         response?.message ||
         response?.msg ||
-        `Bitvoya API call failed for ${endpoint}`
+        `Bitvoya API call failed for ${endpoint}`,
+      {
+        endpoint,
+        response,
+      }
+    );
+  }
+
+  const businessPayload = response?.data;
+  const businessCodeRaw =
+    businessPayload && typeof businessPayload === "object" && "code" in businessPayload
+      ? businessPayload.code
+      : null;
+  const businessCode =
+    businessCodeRaw === null || businessCodeRaw === undefined || businessCodeRaw === ""
+      ? null
+      : Number.parseInt(String(businessCodeRaw), 10);
+  const businessSuccess = businessCode === null || businessCode === 0 || businessCode === 200;
+
+  if (!businessSuccess) {
+    throw createBitvoyaApiError(
+      businessPayload?.error ||
+        businessPayload?.message ||
+        businessPayload?.msg ||
+        `Bitvoya API business error for ${endpoint}`,
+      {
+        endpoint,
+        response,
+        businessCode,
+      }
     );
   }
 

@@ -2271,6 +2271,8 @@ function buildHotelRoomsAgentBrief({
   selectionGuide = null,
   dateValidation = null,
   roomCount = 0,
+  inventoryError = null,
+  identityResolution = null,
 } = {}) {
   if (roomCount > 0 && primaryRecommendation) {
     const displayTotal = firstNonEmpty(
@@ -2331,6 +2333,62 @@ function buildHotelRoomsAgentBrief({
         recommendedAngle,
         branches,
         watchouts: asArray(primaryRecommendation?.tradeoffs).slice(0, 2),
+        nextQuestion,
+      }),
+    };
+  }
+
+  if (inventoryError || identityResolution?.resolution_status === "unresolved") {
+    const displayHotel =
+      hotel?.hotel_name ||
+      identityResolution?.resolved_hotel_name ||
+      identityResolution?.input_hotel_name ||
+      `hotel_id ${identityResolution?.input_hotel_id || "unknown"}`;
+    const unresolvedIdentity = identityResolution?.resolution_status === "unresolved";
+    const recommendedOpening = unresolvedIdentity
+      ? `Live room lookup did not resolve ${displayHotel} into a bookable Bitvoya hotel yet. Do not present this as sold out.`
+      : `Live room lookup failed for ${displayHotel}, but that is not the same as confirmed sellout.`;
+    const recommendedAngle = compactText(
+      uniqueTexts(
+        [
+          inventoryError ? `Live lookup error: ${inventoryError}` : null,
+          hotel?.bitvoya_value_brief?.primary_angle,
+          hotel?.static_story?.positioning,
+          unresolvedIdentity
+            ? "If the hotel id may be from a frontend page or foreign system, recover the canonical Bitvoya hotel id before judging inventory."
+            : null,
+        ],
+        3
+      ).join(" "),
+      220
+    );
+    const branches = uniqueTexts(
+      [
+        unresolvedIdentity
+          ? "Retry with hotel_name and optional city_name so MCP can recover the canonical live hotel id."
+          : "Retry the live room lookup before concluding the hotel is unavailable.",
+        "If dates are fixed, compare same-city alternatives while this hotel's live identity or inventory is repaired.",
+      ],
+      3
+    );
+    const nextQuestion = unresolvedIdentity
+      ? "Ask for the hotel name or canonical hotel id if the current id may be non-canonical."
+      : "Ask whether to retry live inventory or pivot to alternatives.";
+
+    return {
+      mode: unresolvedIdentity ? "hotel_rooms_identity_unresolved" : "hotel_rooms_lookup_error",
+      booking_readiness: {
+        status: unresolvedIdentity ? "needs_identity_resolution" : "needs_inventory_retry",
+      },
+      recommended_opening: recommendedOpening,
+      recommended_angle: recommendedAngle,
+      branches,
+      watchouts: [],
+      next_question: nextQuestion,
+      presenter_lines: buildAgentBriefPresenterLines({
+        recommendedOpening,
+        recommendedAngle,
+        branches,
         nextQuestion,
       }),
     };
@@ -4667,6 +4725,358 @@ async function findHotelByIdentity(db, { source_hotel_id, tripwiki_hotel_id, hot
   );
 }
 
+function normalizeHotelIdentityText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreHotelIdentityCandidate(candidate, hotelName, cityName = null) {
+  const targetHotel = normalizeHotelIdentityText(hotelName);
+  const candidateAlias = normalizeHotelIdentityText(firstNonEmpty(candidate?.alias, candidate?.hotel_name, candidate?.hotel_name_en));
+  const candidateName = normalizeHotelIdentityText(firstNonEmpty(candidate?.entity_name, candidate?.hotel_name, candidate?.hotel_name_en));
+  const targetCity = normalizeHotelIdentityText(cityName);
+  const candidateCity = normalizeHotelIdentityText(candidate?.city_name);
+
+  let score = 0;
+
+  if (targetHotel && candidateAlias === targetHotel) score += 140;
+  if (targetHotel && candidateName === targetHotel) score += 130;
+  if (targetHotel && candidateAlias && (candidateAlias.includes(targetHotel) || targetHotel.includes(candidateAlias))) score += 70;
+  if (targetHotel && candidateName && (candidateName.includes(targetHotel) || targetHotel.includes(candidateName))) score += 60;
+  if (candidate?.source === "canonical") score += 18;
+  if (Number(candidate?.is_primary) === 1) score += 10;
+
+  if (targetCity && candidateCity) {
+    if (candidateCity === targetCity) score += 30;
+    else if (candidateCity.includes(targetCity) || targetCity.includes(candidateCity)) score += 18;
+    else score -= 24;
+  }
+
+  return score;
+}
+
+async function findCanonicalHotelAliasCandidates(db, { hotel_name, city_name }, limit = 8) {
+  const exact = normalizeSearchText(hotel_name);
+  if (!exact) return [];
+
+  const parts = exact.split(/\s+/).filter(Boolean);
+  const fuzzyLike = `%${parts.join("%")}%`;
+  const broadLike = `%${exact}%`;
+
+  const rows = await db.query(
+    `
+      SELECT
+        a.tripwiki_entity_id,
+        a.entity_name,
+        a.source_entity_key AS source_hotel_id,
+        a.alias,
+        a.locale,
+        a.source,
+        a.is_primary,
+        h.tripwiki_hotel_id,
+        h.source_city_id,
+        h.city_name,
+        h.hotel_name,
+        JSON_UNQUOTE(JSON_EXTRACT(h.display_names_json, '$."en-US"')) AS hotel_name_en,
+        h.star_rating,
+        h.review_score
+      FROM tripwiki_canonical_entity_aliases_v1 a
+      LEFT JOIN tripwiki_canonical_hotels_v1 h
+        ON h.source_hotel_id = a.source_entity_key
+      WHERE a.entity_type = 'hotel'
+        AND (
+          LOWER(a.alias) = ?
+          OR LOWER(a.entity_name) = ?
+          OR LOWER(a.alias) LIKE ?
+          OR LOWER(a.entity_name) LIKE ?
+          OR LOWER(a.alias) LIKE ?
+          OR LOWER(a.entity_name) LIKE ?
+        )
+      ORDER BY
+        CASE
+          WHEN LOWER(a.alias) = ? THEN 0
+          WHEN LOWER(a.entity_name) = ? THEN 1
+          ELSE 2
+        END,
+        COALESCE(h.star_rating, 0) DESC,
+        COALESCE(h.review_score, 0) DESC
+      LIMIT ?
+    `,
+    [exact, exact, broadLike, broadLike, fuzzyLike, fuzzyLike, exact, exact, Math.max(limit * 4, 12)]
+  );
+
+  return uniqueBy(
+    rows
+      .map((row) => ({
+        ...row,
+        match_score: scoreHotelIdentityCandidate(row, hotel_name, city_name),
+      }))
+      .filter((row) => row.source_hotel_id && row.match_score > 0)
+      .sort((a, b) => b.match_score - a.match_score),
+    (row) => row.source_hotel_id
+  ).slice(0, limit);
+}
+
+async function findCanonicalHotelSuggestCandidate(api, { hotel_name, city_name }) {
+  const hotelName = compactText(hotel_name, 200);
+  if (!hotelName) return null;
+
+  const queries = uniqueTexts(
+    [
+      hotelName,
+      city_name && !normalizeSearchText(hotelName).includes(normalizeSearchText(city_name))
+        ? `${city_name} ${hotelName}`
+        : null,
+    ],
+    3
+  );
+
+  const seeded = [];
+  for (const query of queries) {
+    const suggest = await api.searchSuggest(query).catch(() => ({ hotels: [] }));
+    seeded.push(
+      ...asArray(suggest?.hotels).map((hotel) => ({
+        hotel_id: normalizeId(hotel?.id),
+        hotel_name: firstNonEmpty(hotel?.name),
+        hotel_name_en: firstNonEmpty(hotel?.nameEn),
+        code: normalizeId(hotel?.code),
+        global_hotel_code: normalizeId(hotel?.globalHotelCode),
+      }))
+    );
+  }
+
+  const ranked = uniqueBy(
+    seeded
+      .map((hotel) => ({
+        ...hotel,
+        match_score: scoreHotelIdentityCandidate(hotel, hotel_name, city_name),
+      }))
+      .filter((hotel) => hotel.hotel_id && hotel.match_score > 0)
+      .sort((a, b) => b.match_score - a.match_score),
+    (hotel) => hotel.hotel_id
+  );
+
+  return ranked[0] || null;
+}
+
+async function resolveHotelIdentity(api, db, { hotel_id, hotel_name = null, city_name = null }) {
+  const inputHotelId = normalizeId(hotel_id);
+  const inputHotelName = compactText(hotel_name, 220);
+  const inputCityName = compactText(city_name, 160);
+  const notes = [];
+  let hotel = null;
+  let detailError = null;
+  let resolutionStatus = "direct";
+  let resolutionSource = "input_hotel_id";
+  let resolvedHotelId = inputHotelId;
+  let aliasCandidate = null;
+  let suggestCandidate = null;
+
+  try {
+    hotel = await api.getHotelDetail(inputHotelId);
+  } catch (error) {
+    detailError = error;
+  }
+
+  if (hotel?.id) {
+    resolvedHotelId = normalizeId(hotel.id);
+    if (resolvedHotelId && inputHotelId && resolvedHotelId !== inputHotelId) {
+      resolutionStatus = "remapped";
+      resolutionSource = "live_detail";
+      notes.push(`Live detail normalized hotel_id ${inputHotelId} to ${resolvedHotelId}.`);
+    }
+
+    return {
+      input_hotel_id: inputHotelId,
+      input_hotel_name: inputHotelName,
+      input_city_name: inputCityName,
+      resolved_hotel_id: resolvedHotelId,
+      resolved_hotel_name: firstNonEmpty(hotel?.name, inputHotelName),
+      resolved_hotel_name_en: firstNonEmpty(hotel?.nameEn),
+      resolution_status: resolutionStatus,
+      resolution_source: resolutionSource,
+      notes,
+      hotel,
+      detail_error: detailError,
+      alias_candidate: null,
+      suggest_candidate: null,
+    };
+  }
+
+  if (inputHotelName) {
+    const aliasCandidates = await findCanonicalHotelAliasCandidates(db, {
+      hotel_name: inputHotelName,
+      city_name: inputCityName,
+    }).catch(() => []);
+    aliasCandidate = aliasCandidates[0] || null;
+
+    if (aliasCandidate?.source_hotel_id) {
+      resolvedHotelId = normalizeId(aliasCandidate.source_hotel_id);
+      resolutionStatus = resolvedHotelId === inputHotelId ? "direct_name_match" : "remapped";
+      resolutionSource = "tripwiki_alias";
+      notes.push(
+        `Recovered canonical Bitvoya hotel_id ${resolvedHotelId} from hotel_name "${inputHotelName}".`
+      );
+    } else {
+      suggestCandidate = await findCanonicalHotelSuggestCandidate(api, {
+        hotel_name: inputHotelName,
+        city_name: inputCityName,
+      }).catch(() => null);
+
+      if (suggestCandidate?.hotel_id) {
+        resolvedHotelId = suggestCandidate.hotel_id;
+        resolutionStatus = resolvedHotelId === inputHotelId ? "direct_name_match" : "remapped";
+        resolutionSource = "search_suggest";
+        notes.push(
+          `Recovered canonical Bitvoya hotel_id ${resolvedHotelId} from live hotel suggestion matching "${inputHotelName}".`
+        );
+      }
+    }
+  }
+
+  if (resolvedHotelId && resolvedHotelId !== inputHotelId) {
+    try {
+      hotel = await api.getHotelDetail(resolvedHotelId);
+      if (hotel?.id) {
+        return {
+          input_hotel_id: inputHotelId,
+          input_hotel_name: inputHotelName,
+          input_city_name: inputCityName,
+          resolved_hotel_id: normalizeId(hotel.id),
+          resolved_hotel_name: firstNonEmpty(hotel?.name, aliasCandidate?.hotel_name, suggestCandidate?.hotel_name, inputHotelName),
+          resolved_hotel_name_en: firstNonEmpty(
+            hotel?.nameEn,
+            aliasCandidate?.hotel_name_en,
+            suggestCandidate?.hotel_name_en
+          ),
+          resolution_status: resolutionStatus,
+          resolution_source: resolutionSource,
+          notes,
+          hotel,
+          detail_error: null,
+          alias_candidate: aliasCandidate,
+          suggest_candidate: suggestCandidate,
+        };
+      }
+    } catch (error) {
+      detailError = error;
+    }
+  }
+
+  if (!detailError) {
+    notes.push(
+      inputHotelName
+        ? `The provided hotel_id ${inputHotelId} did not resolve through /hotels/detail, even after hotel-name recovery.`
+        : `The provided hotel_id ${inputHotelId} did not resolve through /hotels/detail.`
+    );
+  } else {
+    notes.push(`Live detail lookup failed: ${compactText(detailError?.message, 180) || "unknown error"}`);
+  }
+
+  if (!inputHotelName) {
+    notes.push(
+      "If hotel_id came from a frontend page or foreign system, pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id."
+    );
+  }
+
+  return {
+    input_hotel_id: inputHotelId,
+    input_hotel_name: inputHotelName,
+    input_city_name: inputCityName,
+    resolved_hotel_id: normalizeId(
+      firstNonEmpty(
+        hotel?.id,
+        aliasCandidate?.source_hotel_id,
+        suggestCandidate?.hotel_id,
+        resolvedHotelId !== inputHotelId ? resolvedHotelId : null
+      )
+    ),
+    resolved_hotel_name: firstNonEmpty(
+      hotel?.name,
+      aliasCandidate?.hotel_name,
+      aliasCandidate?.entity_name,
+      suggestCandidate?.hotel_name,
+      inputHotelName
+    ),
+    resolved_hotel_name_en: firstNonEmpty(hotel?.nameEn, aliasCandidate?.hotel_name_en, suggestCandidate?.hotel_name_en),
+    resolution_status: "unresolved",
+    resolution_source: resolutionSource,
+    notes,
+    hotel,
+    detail_error: detailError,
+    alias_candidate: aliasCandidate,
+    suggest_candidate: suggestCandidate,
+  };
+}
+
+function hydrateHotelIdentity(normalizedHotel, identityResolution, nearbyPois = []) {
+  const hydrated = {
+    ...normalizedHotel,
+    hotel_id: normalizeId(
+      firstNonEmpty(
+        normalizedHotel?.hotel_id,
+        identityResolution?.resolved_hotel_id,
+        identityResolution?.input_hotel_id
+      )
+    ),
+    hotel_name: firstNonEmpty(
+      normalizedHotel?.hotel_name,
+      identityResolution?.resolved_hotel_name,
+      identityResolution?.input_hotel_name
+    ),
+    hotel_name_en: firstNonEmpty(normalizedHotel?.hotel_name_en, identityResolution?.resolved_hotel_name_en),
+  };
+
+  hydrated.benefit_brief = buildHotelBenefitBrief(hydrated);
+  hydrated.location_brief = buildHotelLocationBrief(hydrated);
+  hydrated.bitvoya_value_brief = buildBitvoyaValueBrief(hydrated, nearbyPois);
+
+  return hydrated;
+}
+
+function buildIdentityResolutionBrief(identityResolution) {
+  if (!identityResolution) return null;
+
+  const aliasCandidate = identityResolution.alias_candidate
+    ? {
+        source_hotel_id: normalizeId(identityResolution.alias_candidate.source_hotel_id),
+        hotel_name: firstNonEmpty(
+          identityResolution.alias_candidate.hotel_name,
+          identityResolution.alias_candidate.entity_name
+        ),
+        hotel_name_en: firstNonEmpty(identityResolution.alias_candidate.hotel_name_en),
+        city_name: firstNonEmpty(identityResolution.alias_candidate.city_name),
+        match_score: asNullableNumber(identityResolution.alias_candidate.match_score),
+      }
+    : null;
+  const suggestCandidate = identityResolution.suggest_candidate
+    ? {
+        hotel_id: normalizeId(identityResolution.suggest_candidate.hotel_id),
+        hotel_name: firstNonEmpty(identityResolution.suggest_candidate.hotel_name),
+        hotel_name_en: firstNonEmpty(identityResolution.suggest_candidate.hotel_name_en),
+        code: normalizeId(identityResolution.suggest_candidate.code),
+        global_hotel_code: normalizeId(identityResolution.suggest_candidate.global_hotel_code),
+      }
+    : null;
+
+  return {
+    input_hotel_id: identityResolution.input_hotel_id,
+    input_hotel_name: identityResolution.input_hotel_name,
+    input_city_name: identityResolution.input_city_name,
+    resolved_hotel_id: identityResolution.resolved_hotel_id,
+    resolved_hotel_name: identityResolution.resolved_hotel_name,
+    resolved_hotel_name_en: identityResolution.resolved_hotel_name_en,
+    resolution_status: identityResolution.resolution_status,
+    resolution_source: identityResolution.resolution_source,
+    notes: uniqueTexts(identityResolution.notes, 4),
+    alias_candidate: aliasCandidate,
+    suggest_candidate: suggestCandidate,
+  };
+}
+
 export async function getHotelGrounding(db, identity, poiLimit) {
   const row = await findHotelByIdentity(db, identity);
   if (!row) {
@@ -4726,46 +5136,98 @@ export async function getHotelGrounding(db, identity, poiLimit) {
   });
 }
 
-export async function getHotelDetail(api, db, { hotel_id }) {
-  const hotel = await api.getHotelDetail(hotel_id);
-  const hotelId = normalizeId(firstNonEmpty(hotel?.id, hotel_id));
-  const cityId = normalizeId(hotel?.profiles?.CITY?.id);
+export async function getHotelDetail(api, db, { hotel_id, hotel_name = null, city_name = null }) {
+  const identityResolution = await resolveHotelIdentity(api, db, {
+    hotel_id,
+    hotel_name,
+    city_name,
+  });
+  const hotel = identityResolution.hotel;
+  const hotelId = normalizeId(
+    firstNonEmpty(hotel?.id, identityResolution?.resolved_hotel_id, hotel_id)
+  );
+  const cityId = normalizeId(firstNonEmpty(hotel?.profiles?.CITY?.id, identityResolution?.alias_candidate?.source_city_id));
 
   const [groundingPayload, cityGroundingMap] = await Promise.all([
     getHotelGrounding(db, { source_hotel_id: hotelId }, 6).catch(() => null),
     getCityGroundingSnapshotMap(db, cityId ? [cityId] : []),
   ]);
 
-  const normalizedHotel = normalizeHotelSummary(hotel, {
-    grounding: groundingPayload?.data?.hotel || groundingPayload?.hotel || null,
-    cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
-    matchSource: "hotel_detail",
-  });
   const nearbyPois = asArray(groundingPayload?.data?.nearby_pois || groundingPayload?.nearby_pois);
   const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
-  const enrichedHotel = {
-    ...normalizedHotel,
-    nearby_pois_brief: nearbyPoisBrief,
-    bitvoya_value_brief: buildBitvoyaValueBrief(
-      {
-        ...normalizedHotel,
-        nearby_pois_brief: nearbyPoisBrief,
+  const normalizedHotel = hydrateHotelIdentity(
+    {
+      ...normalizeHotelSummary(hotel, {
+        grounding: groundingPayload?.data?.hotel || groundingPayload?.hotel || null,
+        cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
+        matchSource: "hotel_detail",
+      }),
+      nearby_pois_brief: nearbyPoisBrief,
+    },
+    identityResolution,
+    nearbyPois
+  );
+
+  if (!hotel) {
+    return buildAgenticToolResult({
+      tool: "get_hotel_detail",
+      status: "partial",
+      intent: "hotel_evaluation",
+      summary:
+        `Live hotel detail could not resolve hotel_id ${hotel_id}.` +
+        (identityResolution?.resolved_hotel_id && identityResolution.resolved_hotel_id !== hotel_id
+          ? ` A canonical candidate ${identityResolution.resolved_hotel_id} was recovered, but live detail still did not load.`
+          : "") +
+        ` Do not present this as a hotel-quality judgment or sellout.`,
+      recommended_next_tools: [
+        buildNextTool("search_hotels", "Recover the canonical hotel id from hotel name or destination search before rate lookup.", [
+          "query or city_name",
+          "checkin",
+          "checkout",
+        ]),
+        buildNextTool("get_hotel_grounding", "Keep the hotel usable via static grounding while canonical live identity is recovered.", [
+          "source_hotel_id or hotel_name",
+        ]),
+      ],
+      warnings: uniqueTexts(identityResolution?.notes, 4),
+      selection_hints: [
+        "When hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical Bitvoya live id.",
+        "Use grounding, benefits, and nearby POIs to keep the hotel in play while live identity is repaired.",
+      ],
+      entity_refs: {
+        hotel_ids: [normalizeId(firstNonEmpty(identityResolution?.resolved_hotel_id, hotel_id))],
       },
-      nearbyPois
-    ),
-  };
+      data: {
+        found: false,
+        hotel: normalizedHotel,
+        hotel_detail: null,
+        decision_brief: buildHotelDecisionBrief(normalizedHotel),
+        benefit_brief: normalizedHotel.benefit_brief,
+        location_brief: normalizedHotel.location_brief,
+        nearby_pois_brief: nearbyPoisBrief,
+        bitvoya_value_brief: normalizedHotel.bitvoya_value_brief,
+        identity_resolution: buildIdentityResolutionBrief(identityResolution),
+        grounding: groundingPayload?.data || groundingPayload,
+        city_grounding_excerpt: cityId ? buildCityGroundingExcerpt(cityGroundingMap.get(cityId) || null) : null,
+      },
+    });
+  }
+
   const hotelDetail = normalizeHotelDetailPayload(hotel);
-  const decisionBrief = buildHotelDecisionBrief(enrichedHotel);
-  const agentBrief = buildHotelDetailAgentBrief(enrichedHotel, decisionBrief);
+  const decisionBrief = buildHotelDecisionBrief(normalizedHotel);
+  const agentBrief = buildHotelDetailAgentBrief(normalizedHotel, decisionBrief);
 
   return buildAgenticToolResult({
     tool: "get_hotel_detail",
     status: "ok",
     intent: "hotel_evaluation",
-    summary: `Loaded live hotel detail for ${enrichedHotel.hotel_name}.` +
-      (enrichedHotel?.benefit_brief?.headline ? ` ${enrichedHotel.benefit_brief.headline}` : "") +
+    summary: `Loaded live hotel detail for ${normalizedHotel.hotel_name}.` +
+      (identityResolution?.resolution_status === "remapped"
+        ? ` Canonical live hotel_id recovered as ${normalizedHotel.hotel_id}.`
+        : "") +
+      (normalizedHotel?.benefit_brief?.headline ? ` ${normalizedHotel.benefit_brief.headline}` : "") +
       (nearbyPoisBrief?.count ? ` Bitvoya grounding adds ${nearbyPoisBrief.count} nearby POI anchor(s).` : "") +
-      (enrichedHotel?.location_brief?.headline ? ` ${enrichedHotel.location_brief.headline}` : ""),
+      (normalizedHotel?.location_brief?.headline ? ` ${normalizedHotel.location_brief.headline}` : ""),
     recommended_next_tools: [
       buildNextTool("get_hotel_rooms", "Check live room and rate inventory before any booking step.", [
         "hotel_id",
@@ -4783,23 +5245,29 @@ export async function getHotelDetail(api, db, { hotel_id }) {
       "Use hotel.membership_benefits for a compact benefit summary.",
       "Use hotel_detail.benefits for the normalized underlying benefit arrays.",
       "Use decision_brief.choose_reasons and tradeoffs for agent-facing recommendation text.",
+      "When hotel_id is suspect, pass hotel_name and optional city_name so MCP can recover the canonical live id instead of guessing.",
     ],
+    warnings:
+      identityResolution?.resolution_status === "remapped"
+        ? uniqueTexts(identityResolution?.notes, 2)
+        : [],
     entity_refs: {
-      hotel_ids: [enrichedHotel.hotel_id],
-      city_ids: [enrichedHotel?.city?.source_city_id],
-      tripwiki_hotel_ids: [enrichedHotel?.grounding_excerpt?.tripwiki_hotel_id],
-      tripwiki_city_ids: [enrichedHotel?.city_grounding_excerpt?.tripwiki_city_id],
+      hotel_ids: [normalizedHotel.hotel_id],
+      city_ids: [normalizedHotel?.city?.source_city_id],
+      tripwiki_hotel_ids: [normalizedHotel?.grounding_excerpt?.tripwiki_hotel_id],
+      tripwiki_city_ids: [normalizedHotel?.city_grounding_excerpt?.tripwiki_city_id],
     },
     data: {
       found: true,
-      hotel: enrichedHotel,
+      hotel: normalizedHotel,
       hotel_detail: hotelDetail,
       decision_brief: decisionBrief,
-      benefit_brief: enrichedHotel.benefit_brief,
-      location_brief: enrichedHotel.location_brief,
+      benefit_brief: normalizedHotel.benefit_brief,
+      location_brief: normalizedHotel.location_brief,
       nearby_pois_brief: nearbyPoisBrief,
-      bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
+      bitvoya_value_brief: normalizedHotel.bitvoya_value_brief,
       agent_brief: agentBrief,
+      identity_resolution: buildIdentityResolutionBrief(identityResolution),
       grounding: groundingPayload?.data || groundingPayload,
       city_grounding_excerpt: cityId ? buildCityGroundingExcerpt(cityGroundingMap.get(cityId) || null) : null,
     },
@@ -4807,39 +5275,48 @@ export async function getHotelDetail(api, db, { hotel_id }) {
 }
 
 export async function getHotelRooms(api, db, params, options = {}) {
-  const [hotelResult, roomsResult] = await Promise.allSettled([
-    api.getHotelDetail(params.hotel_id),
-    api.getHotelRooms({
-      hotelId: params.hotel_id,
-      checkin: params.checkin,
-      checkout: params.checkout,
-      adultNum: params.adult_num,
-      childNum: params.child_num || 0,
-      roomNum: params.room_num || 1,
-    }, {
-      requestPrincipal: options.request_principal || null,
-    }),
-  ]);
+  const identityResolution = await resolveHotelIdentity(api, db, {
+    hotel_id: params.hotel_id,
+    hotel_name: params.hotel_name,
+    city_name: params.city_name,
+  });
+  const liveLookupHotelId = normalizeId(
+    firstNonEmpty(identityResolution?.resolved_hotel_id, params.hotel_id)
+  );
 
-  if (hotelResult.status !== "fulfilled") {
-    throw hotelResult.reason;
-  }
-
-  const hotel = hotelResult.value;
+  let hotel = identityResolution.hotel;
   let rooms = [];
   let liveRoomsError = null;
+  let roomLookupError = null;
 
-  if (roomsResult.status === "fulfilled") {
-    rooms = roomsResult.value;
-  } else if (isLikelyTransientLiveError(roomsResult.reason)) {
-    liveRoomsError = roomsResult.reason;
-    rooms = [];
-  } else {
-    throw roomsResult.reason;
+  if (liveLookupHotelId) {
+    try {
+      rooms = await api.getHotelRooms(
+        {
+          hotelId: liveLookupHotelId,
+          checkin: params.checkin,
+          checkout: params.checkout,
+          adultNum: params.adult_num,
+          childNum: params.child_num || 0,
+          roomNum: params.room_num || 1,
+        },
+        {
+          requestPrincipal: options.request_principal || null,
+        }
+      );
+    } catch (error) {
+      if (isLikelyTransientLiveError(error)) {
+        liveRoomsError = error;
+      } else {
+        roomLookupError = error;
+      }
+    }
   }
 
-  const hotelId = normalizeId(firstNonEmpty(hotel?.id, params.hotel_id));
-  const cityId = normalizeId(hotel?.profiles?.CITY?.id);
+  const hotelId = normalizeId(firstNonEmpty(hotel?.id, liveLookupHotelId, params.hotel_id));
+  const cityId = normalizeId(
+    firstNonEmpty(hotel?.profiles?.CITY?.id, identityResolution?.alias_candidate?.source_city_id)
+  );
 
   const [groundingMap, cityGroundingMap, nearbyPoiMap] = await Promise.all([
     getHotelGroundingSnapshotMap(db, hotelId ? [hotelId] : []),
@@ -4847,28 +5324,25 @@ export async function getHotelRooms(api, db, params, options = {}) {
     getNearbyPoiSnapshotMap(db, hotelId ? [hotelId] : [], 6),
   ]);
 
+  const nearbyPois = hotelId ? nearbyPoiMap.get(hotelId) || [] : [];
+  const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
+  const enrichedHotel = hydrateHotelIdentity(
+    {
+      ...normalizeHotelSummary(hotel, {
+        grounding: hotelId ? groundingMap.get(hotelId) || null : null,
+        cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
+        matchSource: "hotel_rooms",
+      }),
+      nearby_pois_brief: nearbyPoisBrief,
+    },
+    identityResolution,
+    nearbyPois
+  );
+
   const normalizedRooms = asArray(rooms)
     .map((room) => normalizeRoom(room, params.rate_limit_per_room))
     .slice(0, params.room_limit);
 
-  const normalizedHotel = normalizeHotelSummary(hotel, {
-    grounding: hotelId ? groundingMap.get(hotelId) || null : null,
-    cityGrounding: cityId ? cityGroundingMap.get(cityId) || null : null,
-    matchSource: "hotel_rooms",
-  });
-  const nearbyPois = hotelId ? nearbyPoiMap.get(hotelId) || [] : [];
-  const nearbyPoisBrief = buildNearbyPoiBrief(nearbyPois);
-  const enrichedHotel = {
-    ...normalizedHotel,
-    nearby_pois_brief: nearbyPoisBrief,
-    bitvoya_value_brief: buildBitvoyaValueBrief(
-      {
-        ...normalizedHotel,
-        nearby_pois_brief: nearbyPoisBrief,
-      },
-      nearbyPois
-    ),
-  };
   const flattenedRates = flattenRoomRates(normalizedRooms);
   const cheapestRate = sortByDisplayTotal(flattenedRates)[0];
   const rateRanking = rankRatesWithPreferences(flattenedRates, params);
@@ -4876,6 +5350,8 @@ export async function getHotelRooms(api, db, params, options = {}) {
   const primaryRecommendation = rateRanking.ranked_rows[0] || null;
   const dateValidation = buildStayDateValidation(params.checkin, params.checkout);
   const noInventoryWarnings = [];
+  const unresolvedIdentity = identityResolution?.resolution_status === "unresolved" && !hotel;
+  const roomLookupErrorSummary = roomLookupError ? summarizeLiveError(roomLookupError) : null;
 
   if (!dateValidation.valid_format) {
     noInventoryWarnings.push(
@@ -4891,9 +5367,21 @@ export async function getHotelRooms(api, db, params, options = {}) {
     );
   }
 
+  if (identityResolution?.resolution_status === "remapped") {
+    noInventoryWarnings.push(...uniqueTexts(identityResolution?.notes, 2));
+  } else if (unresolvedIdentity) {
+    noInventoryWarnings.push(...uniqueTexts(identityResolution?.notes, 3));
+  }
+
   if (liveRoomsError) {
     noInventoryWarnings.push(
       `Live room inventory timed out for ${enrichedHotel.hotel_name}: ${summarizeLiveError(liveRoomsError)}`
+    );
+  }
+
+  if (roomLookupErrorSummary) {
+    noInventoryWarnings.push(
+      `Live room inventory failed for ${enrichedHotel.hotel_name || `hotel_id ${params.hotel_id}`}: ${roomLookupErrorSummary}`
     );
   }
 
@@ -4910,15 +5398,37 @@ export async function getHotelRooms(api, db, params, options = {}) {
     },
     dateValidation,
     roomCount: normalizedRooms.length,
+    inventoryError: liveRoomsError ? summarizeLiveError(liveRoomsError) : roomLookupErrorSummary,
+    identityResolution,
   });
+
+  const status =
+    normalizedRooms.length > 0
+      ? "ok"
+      : liveRoomsError || roomLookupError || unresolvedIdentity
+        ? "partial"
+        : "not_found";
+  const inventoryStatus =
+    normalizedRooms.length > 0
+      ? "available"
+      : liveRoomsError
+        ? "timeout"
+        : roomLookupError
+          ? "error"
+          : unresolvedIdentity
+            ? "identity_unresolved"
+            : "empty";
 
   return buildAgenticToolResult({
     tool: "get_hotel_rooms",
-    status: normalizedRooms.length > 0 ? "ok" : liveRoomsError ? "partial" : "not_found",
+    status,
     intent: "rate_selection",
     summary:
       normalizedRooms.length > 0
         ? `Loaded ${normalizedRooms.length} room options for ${enrichedHotel.hotel_name}.` +
+          (identityResolution?.resolution_status === "remapped"
+            ? ` Canonical live hotel_id recovered as ${enrichedHotel.hotel_id}.`
+            : "") +
           (enrichedHotel?.benefit_brief?.headline ? ` ${enrichedHotel.benefit_brief.headline}` : "") +
           ` Cheapest current display total is ${cheapestRate?.rate?.pricing?.display_total_cny ?? "N/A"} CNY.` +
           (primaryRecommendation
@@ -4930,6 +5440,16 @@ export async function getHotelRooms(api, db, params, options = {}) {
               ? ` Static value signal: ${compactText(enrichedHotel.bitvoya_value_brief.primary_angle, 180)}`
               : "") +
             ` Retry the live room lookup before concluding the hotel is unavailable.`
+        : roomLookupError
+          ? `Live room lookup failed for ${enrichedHotel.hotel_name || `hotel_id ${params.hotel_id}`}.` +
+            ` The backend returned: ${roomLookupErrorSummary}.` +
+            ` Do not present this as a clean no-inventory result.`
+        : unresolvedIdentity
+          ? `Live room lookup could not resolve hotel_id ${params.hotel_id} into a canonical Bitvoya hotel.` +
+            (params.hotel_name
+              ? ` Hotel name hint "${params.hotel_name}" still did not produce a live detail payload.`
+              : "") +
+            ` Do not present this as sold out.`
         : `No live room inventory was returned for ${enrichedHotel.hotel_name}.` +
           (enrichedHotel?.bitvoya_value_brief?.primary_angle
             ? ` Static value signal: ${compactText(enrichedHotel.bitvoya_value_brief.primary_angle, 180)}`
@@ -4954,32 +5474,32 @@ export async function getHotelRooms(api, db, params, options = {}) {
             ]),
             buildNextTool("get_hotel_detail", "Return to hotel-level fit and benefit context if needed.", ["hotel_id"]),
           ]
-        : liveRoomsError
+        : liveRoomsError || roomLookupError
           ? [
               buildNextTool("get_hotel_rooms", "Retry the live room inventory lookup for the same hotel and stay window.", [
                 "hotel_id",
                 "checkin",
                 "checkout",
               ]),
-              buildNextTool("compare_hotels", "If the traveler is date-fixed, compare alternatives while the timed-out hotel is retried.", [
+              buildNextTool("compare_hotels", "If the traveler is date-fixed, compare alternatives while the broken live lookup is retried.", [
                 "hotel_ids",
                 "checkin",
                 "checkout",
               ]),
               buildNextTool("get_hotel_detail", "Keep the hotel in play via static fit and benefit context while live rooms are retried.", ["hotel_id"]),
             ]
-        : [
-            buildNextTool("search_hotels", "Retry the search with a nearby future date range or pivot to alternative hotels in the same city.", [
-              "query or city_name",
-              "checkin",
-              "checkout",
-            ]),
-            buildNextTool("compare_hotels", "Compare same-city alternatives for the same stay window when one property has no live inventory.", [
-              "hotel_ids",
-              "checkin",
-              "checkout",
-            ]),
-          ],
+          : [
+              buildNextTool("search_hotels", "Retry the search with a nearby future date range or pivot to alternative hotels in the same city.", [
+                "query or city_name",
+                "checkin",
+                "checkout",
+              ]),
+              buildNextTool("compare_hotels", "Compare same-city alternatives for the same stay window when one property has no live inventory.", [
+                "hotel_ids",
+                "checkin",
+                "checkout",
+              ]),
+            ],
     warnings: normalizedRooms.length > 0 ? [] : noInventoryWarnings,
     pricing_notes: [
       "display_total_cny is the guest-facing total aligned with current frontend semantics.",
@@ -4991,6 +5511,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
       "Do not infer final payable totals from search-stage prices once live rates are available.",
       "Use selection_guide when the agent needs a fast cheapest vs flexible vs benefits-based recommendation.",
       "Pass priority_profile, payment_preference, require_free_cancellation, or prefer_benefits when the agent already knows traveler intent.",
+      "When hotel_id may be non-canonical, also pass hotel_name and optional city_name so MCP can recover the canonical Bitvoya live id instead of guessing.",
     ],
     entity_refs: {
       hotel_ids: [enrichedHotel.hotel_id],
@@ -5002,7 +5523,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
     },
     data: {
       found: normalizedRooms.length > 0,
-      inventory_status: normalizedRooms.length > 0 ? "available" : liveRoomsError ? "timeout" : "empty",
+      inventory_status: inventoryStatus,
       hotel: enrichedHotel,
       stay: {
         checkin: params.checkin,
@@ -5018,6 +5539,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
       nearby_pois_brief: nearbyPoisBrief,
       bitvoya_value_brief: enrichedHotel.bitvoya_value_brief,
       agent_brief: agentBrief,
+      identity_resolution: buildIdentityResolutionBrief(identityResolution),
       applied_preferences: buildRoundedAppliedPreferences(rateRanking.applied_preferences),
       comparison_method: rateRanking.comparison_method,
       selection_guide: {
@@ -5032,7 +5554,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
       total_room_options: asArray(rooms).length,
       room_limit_applied: params.room_limit,
       rate_limit_per_room: params.rate_limit_per_room,
-      live_inventory_error: liveRoomsError ? summarizeLiveError(liveRoomsError) : null,
+      live_inventory_error: liveRoomsError ? summarizeLiveError(liveRoomsError) : roomLookupErrorSummary,
       rooms: normalizedRooms,
     },
   });

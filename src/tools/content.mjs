@@ -344,20 +344,22 @@ export async function listHotCities(api, db, { limit }) {
   });
 }
 
-export async function getHotelProfile(api, db, { hotel_id }) {
-  const [detailPayload, profile] = await Promise.all([
-    getHotelDetail(api, db, { hotel_id }),
-    api.getHotelGodProfile(hotel_id),
-  ]);
-
-  const normalizedProfile = normalizeHotelProfile(profile);
+export async function getHotelProfile(api, db, { hotel_id, hotel_name = null, city_name = null }) {
+  const detailPayload = await getHotelDetail(api, db, { hotel_id, hotel_name, city_name });
   const hotel = detailPayload?.data?.hotel || detailPayload.hotel;
+  const canonicalHotelId = hotel?.hotel_id || hotel_id;
+  const profile = await api.getHotelGodProfile(canonicalHotelId).catch(() => null);
+  const normalizedProfile = normalizeHotelProfile(profile);
+  const detailFound = detailPayload?.data?.found !== false;
 
   return buildAgenticToolResult({
     tool: "get_hotel_profile",
-    status: "ok",
+    status: detailFound ? "ok" : "partial",
     intent: "hotel_static_evaluation",
-    summary: `Loaded enriched static profile for ${hotel?.hotel_name || hotel_id}, including long-form property sections and normalized hotel detail.`,
+    summary: detailFound
+      ? `Loaded enriched static profile for ${hotel?.hotel_name || hotel_id}, including long-form property sections and normalized hotel detail.`
+      : `Static profile lookup could not fully resolve hotel_id ${hotel_id}.` +
+        (hotel?.hotel_name ? ` Best recovered hotel context: ${hotel.hotel_name}.` : ""),
     recommended_next_tools: [
       buildNextTool("get_hotel_rooms", "Move from static fit assessment into live room and rate inventory.", [
         "hotel_id",
@@ -373,7 +375,7 @@ export async function getHotelProfile(api, db, { hotel_id }) {
       tripwiki_hotel_ids: [hotel?.grounding_excerpt?.tripwiki_hotel_id],
     },
     data: {
-      found: true,
+      found: detailFound,
       hotel,
       hotel_detail: detailPayload?.data?.hotel_detail || detailPayload.hotel_detail,
       grounding: detailPayload?.data?.grounding || detailPayload.grounding,

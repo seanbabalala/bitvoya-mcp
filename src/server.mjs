@@ -514,13 +514,15 @@ server.registerTool(
   "get_hotel_detail",
   agenticReadTool({
     description:
-      "Fetch Bitvoya hotel detail from the existing API and augment it with tripwiki grounding excerpts.",
+      "Fetch Bitvoya hotel detail from the existing API and augment it with tripwiki grounding excerpts. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id.",
     inputSchema: {
-      hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
+      hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
+      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery when hotel_id may be non-canonical."),
+      city_name: z.string().min(1).optional().describe("Optional city hint to disambiguate hotel-name recovery."),
     },
   }),
-  async ({ hotel_id }) => {
-    const payload = await getHotelDetail(api, db, { hotel_id });
+  async ({ hotel_id, hotel_name, city_name }) => {
+    const payload = await getHotelDetail(api, db, { hotel_id, hotel_name, city_name });
     return asTextResult(payload);
   }
 );
@@ -529,13 +531,15 @@ server.registerTool(
   "get_hotel_profile",
   agenticReadTool({
     description:
-      "Fetch Bitvoya's rich static God Profile for a hotel and pair it with the normalized hotel detail payload.",
+      "Fetch Bitvoya's rich static God Profile for a hotel and pair it with the normalized hotel detail payload. If hotel_id may be non-canonical, also pass hotel_name and optional city_name for recovery.",
     inputSchema: {
-      hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
+      hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
+      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery."),
+      city_name: z.string().min(1).optional().describe("Optional city hint to disambiguate hotel-name recovery."),
     },
   }),
-  async ({ hotel_id }) => {
-    const payload = await getHotelProfile(api, db, { hotel_id });
+  async ({ hotel_id, hotel_name, city_name }) => {
+    const payload = await getHotelProfile(api, db, { hotel_id, hotel_name, city_name });
     return asTextResult(payload);
   }
 );
@@ -544,9 +548,11 @@ server.registerTool(
   "get_hotel_rooms",
   agenticReadTool({
     description:
-      `Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics. ${relativeDateInstruction}`,
+      `Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id. ${relativeDateInstruction}`,
     inputSchema: {
-      hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
+      hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
+      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery when hotel_id may be non-canonical."),
+      city_name: z.string().min(1).optional().describe("Optional city hint to disambiguate hotel-name recovery."),
       checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
       checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
       adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
@@ -567,6 +573,8 @@ server.registerTool(
   }),
   async ({
     hotel_id,
+    hotel_name,
+    city_name,
     checkin,
     checkout,
     adult_num,
@@ -592,6 +600,8 @@ server.registerTool(
 
     const payload = await getHotelRooms(api, db, {
       hotel_id,
+      hotel_name,
+      city_name,
       checkin,
       checkout,
       adult_num: adult_num || 2,
