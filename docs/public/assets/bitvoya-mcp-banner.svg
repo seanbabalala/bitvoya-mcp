@@ -106,7 +106,7 @@
     </text>
     <circle cx="1128" cy="514" r="44" fill="rgba(8,14,20,0.66)" stroke="rgba(255,255,255,0.14)"/>
     <circle cx="1128" cy="514" r="38" fill="rgba(255,255,255,0.06)"/>
-    <text x="784" y="142" fill="#8EE4DA" font-size="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="1.6">HOSTED FLOW</text>
+    <text x="876" y="128" text-anchor="middle" dominant-baseline="middle" fill="#8EE4DA" font-size="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="1.6">HOSTED FLOW</text>
     <text x="784" y="320" fill="#F1E8D7" font-size="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="1.6">QUOTE + BENEFITS</text>
     <text x="784" y="432" fill="#F1E8D7" font-size="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" letter-spacing="1.6">SECURE HANDOFF</text>
   </g>
