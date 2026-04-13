@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="docs/public/assets/bitvoya-favicon.png" alt="Bitvoya favicon" width="68" />
-</p>
-
-<p align="center">
   <img src="docs/public/assets/bitvoya-logo-default.png" alt="Bitvoya" width="280" />
 </p>
 
