@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.bitvoya/bitvoya-mcp",
   "title": "Bitvoya MCP",
-  "description": "Luxury hotel discovery, rate comparison, quote preparation, and secure checkout handoff for AI travel agents.",
+  "description": "Luxury hotel search, rate comparison, booking quotes, and secure checkout handoff.",
   "repository": {
     "url": "https://github.com/seanbabalala/bitvoya-mcp",
     "source": "github"
