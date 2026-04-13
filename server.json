@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.seanbabalala/bitvoya-mcp",
+  "name": "com.bitvoya/bitvoya-mcp",
   "title": "Bitvoya MCP",
   "description": "Luxury hotel discovery, rate comparison, quote preparation, and secure checkout handoff for AI travel agents.",
   "repository": {
