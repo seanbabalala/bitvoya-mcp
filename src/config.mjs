@@ -91,7 +91,7 @@ export function loadConfig() {
     envPath,
     server: {
       name: envValue(fileEnv, "BITVOYA_MCP_SERVER_NAME", "bitvoya-mcp"),
-      version: envValue(fileEnv, "BITVOYA_MCP_SERVER_VERSION", "0.2.0"),
+      version: envValue(fileEnv, "BITVOYA_MCP_SERVER_VERSION", "0.3.0"),
       transport: envValue(fileEnv, "BITVOYA_MCP_TRANSPORT", "stdio"),
     },
     http: {
@@ -99,6 +99,16 @@ export function loadConfig() {
       port: intValue(fileEnv, "BITVOYA_MCP_HTTP_PORT", 3011),
       path: envValue(fileEnv, "BITVOYA_MCP_HTTP_PATH", "/mcp"),
       healthPath: envValue(fileEnv, "BITVOYA_MCP_HTTP_HEALTH_PATH", "/healthz"),
+      sessionIdleTimeoutMs: intValue(
+        fileEnv,
+        "BITVOYA_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS",
+        600000
+      ),
+      sessionSweepIntervalMs: intValue(
+        fileEnv,
+        "BITVOYA_MCP_HTTP_SESSION_SWEEP_INTERVAL_MS",
+        30000
+      ),
       publicBaseUrl: envValue(fileEnv, "BITVOYA_MCP_PUBLIC_BASE_URL", ""),
       allowedHosts: csvValue(fileEnv, "BITVOYA_MCP_ALLOWED_HOSTS"),
       allowedOrigins: csvValue(fileEnv, "BITVOYA_MCP_ALLOWED_ORIGINS"),
@@ -115,7 +125,7 @@ export function loadConfig() {
       timeoutMs: intValue(fileEnv, "BITVOYA_API_TIMEOUT_MS", 30000),
       authToken: envValue(fileEnv, "BITVOYA_API_BEARER_TOKEN", ""),
       acceptLanguage: envValue(fileEnv, "BITVOYA_API_ACCEPT_LANGUAGE", "en"),
-      userAgent: envValue(fileEnv, "BITVOYA_API_USER_AGENT", "bitvoya-mcp/0.2.0"),
+      userAgent: envValue(fileEnv, "BITVOYA_API_USER_AGENT", "bitvoya-mcp/0.3.0"),
     },
     remoteAuth: {
       mode: envValue(fileEnv, "BITVOYA_MCP_REMOTE_AUTH_MODE", "bearer"),

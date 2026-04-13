@@ -1,6 +1,6 @@
 {
   "name": "bitvoya-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node ./src/server.mjs",
     "dev": "node --watch ./src/server.mjs",
-    "check:syntax": "node --check ./src/server.mjs && node --check ./src/auth.mjs && node --check ./src/authz.mjs && node --check ./src/agent-auth.mjs && node --check ./src/remote-auth.mjs && node --check ./src/remote-server.mjs && node --check ./src/token-auth.mjs && node --check ./src/handoff.mjs && node --check ./src/tools/cities.mjs && node --check ./src/tools/content.mjs && node --check ./src/tools/hotels.mjs && node --check ./src/tools/booking.mjs && node --check ./scripts/smoke-discovery.mjs && node --check ./scripts/smoke-booking.mjs && node --check ./scripts/smoke-transport-http.mjs && node --check ./scripts/smoke-all.mjs && node --check ./scripts/verify-agent-key.mjs && node --check ./scripts/create-handoff-session.mjs && node --check ./scripts/migrate-auth-schema.mjs",
+    "check:syntax": "node --check ./src/server.mjs && node --check ./src/auth.mjs && node --check ./src/authz.mjs && node --check ./src/agent-auth.mjs && node --check ./src/remote-auth.mjs && node --check ./src/remote-server.mjs && node --check ./src/http-session-runtime.mjs && node --check ./src/token-auth.mjs && node --check ./src/handoff.mjs && node --check ./src/tools/cities.mjs && node --check ./src/tools/content.mjs && node --check ./src/tools/hotels.mjs && node --check ./src/tools/booking.mjs && node --check ./scripts/smoke-discovery.mjs && node --check ./scripts/smoke-booking.mjs && node --check ./scripts/smoke-transport-http.mjs && node --check ./scripts/smoke-all.mjs && node --check ./scripts/verify-agent-key.mjs && node --check ./scripts/create-handoff-session.mjs && node --check ./scripts/migrate-auth-schema.mjs && node --check ./tests/remote-server.test.mjs",
+    "test:transport": "node --test ./tests/remote-server.test.mjs",
     "smoke:discovery": "node ./scripts/smoke-discovery.mjs",
     "smoke:booking": "node ./scripts/smoke-booking.mjs",
     "smoke:transport": "node ./scripts/smoke-transport-http.mjs",
