@@ -17,7 +17,10 @@
     "verify:agent-key": "node ./scripts/verify-agent-key.mjs",
     "create:handoff": "node ./scripts/create-handoff-session.mjs",
     "migrate:auth": "node ./scripts/migrate-auth-schema.mjs",
-    "deploy:remote": "bash ./scripts/release_live.sh"
+    "publish:registry": "bash ./scripts/publish_registry.sh",
+    "deploy:live": "bash ./scripts/release_live.sh",
+    "deploy:remote": "bash ./scripts/ship_release.sh",
+    "release:ship": "bash ./scripts/ship_release.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
