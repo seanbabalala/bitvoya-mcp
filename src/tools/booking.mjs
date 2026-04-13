@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getHotelRooms } from "./hotels.mjs";
 import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
-import { asArray, asNullableNumber, compactText, firstNonEmpty, roundNullableNumber } from "../format.mjs";
+import { asArray, asNullableNumber, compactText, firstNonEmpty, roundNullableNumber, uniqueBy } from "../format.mjs";
 import { buildIntentSecureHandoff, buildQuoteSecureHandoff } from "../handoff.mjs";
 
 const INTERNAL_EXECUTION_MODE = "internal_execution";
@@ -547,7 +547,7 @@ function parseFrontendSearchQuoteContext(quoteId) {
   const version = Number.parseInt(String(versionRaw || ""), 10);
 
   return {
-    token_kind: "frontend_search_context_quote_id",
+    token_kind: "frontend_search_context_token",
     version: Number.isFinite(version) ? version : null,
     encoded_slug: encodedSlug,
     decoded_slug: decodedSlug,
@@ -564,6 +564,10 @@ function parseFrontendSearchQuoteContext(quoteId) {
   };
 }
 
+function resolvePreparedQuoteId(params = {}) {
+  return normalizeId(params?.prepared_quote_id || params?.quote_id);
+}
+
 function classifyQuoteId(quoteId) {
   const normalized = normalizeId(quoteId);
   if (!normalized) {
@@ -577,7 +581,7 @@ function classifyQuoteId(quoteId) {
   if (parseFrontendSearchQuoteContext(normalized)) {
     return {
       quote_id: normalized,
-      origin: "frontend_search_context_quote_id",
+      origin: "frontend_search_context_token",
       is_runtime_store_id: false,
     };
   }
@@ -607,15 +611,16 @@ function classifyQuoteId(quoteId) {
 
 function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
   const executionMode = normalizeExecutionMode(options);
-  const quoteIdInfo = classifyQuoteId(params?.quote_id);
+  const resolvedQuoteId = resolvePreparedQuoteId(params);
+  const quoteIdInfo = classifyQuoteId(resolvedQuoteId);
   const paymentMethod = normalizeId(params?.payment_method);
   const parsedSearchQuote =
-    quoteIdInfo.origin === "frontend_search_context_quote_id"
-      ? parseFrontendSearchQuoteContext(params?.quote_id)
+    quoteIdInfo.origin === "frontend_search_context_token"
+      ? parseFrontendSearchQuoteContext(resolvedQuoteId)
       : null;
   const isForeignQuote =
     quoteIdInfo.origin === "frontend_or_foreign_quote_id" ||
-    quoteIdInfo.origin === "frontend_search_context_quote_id";
+    quoteIdInfo.origin === "frontend_search_context_token";
   const isRuntimeQuote = quoteIdInfo.origin === "runtime_store_quote_id";
   const recoveredStayLabel =
     parsedSearchQuote?.checkin && parsedSearchQuote?.checkout
@@ -639,18 +644,18 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
     : null;
   const summary =
     parsedSearchQuote
-      ? `Requested quote_id ${quoteIdInfo.quote_id} is a frontend search-context token for ${parsedSearchQuote.hotel_name || parsedSearchQuote.decoded_slug || "the selected hotel"}${recoveredStayLabel ? ` (${recoveredStayLabel}` : ""}${recoveredGuestLabel ? `${recoveredStayLabel ? "; " : " ("}${recoveredGuestLabel}` : ""}${recoveredStayLabel || recoveredGuestLabel ? ")" : ""}, not a server-owned booking quote. It never carried current live room_id / rate_id, so ${tool} cannot continue from it directly.`
+      ? `Requested booking quote input ${quoteIdInfo.quote_id} is a frontend search-context token for ${parsedSearchQuote.hotel_name || parsedSearchQuote.decoded_slug || "the selected hotel"}${recoveredStayLabel ? ` (${recoveredStayLabel}` : ""}${recoveredGuestLabel ? `${recoveredStayLabel ? "; " : " ("}${recoveredGuestLabel}` : ""}${recoveredStayLabel || recoveredGuestLabel ? ")" : ""}, not a server-owned booking quote. It never carried current live room_id / rate_id, so ${tool} cannot continue from it directly.`
       : isForeignQuote
-      ? `Requested quote_id ${quoteIdInfo.quote_id} is not a current MCP server-owned quote. It looks like a frontend or foreign-system quote token, so ${tool} cannot continue from it directly. Prepare a fresh live quote first.`
+      ? `Requested booking quote input ${quoteIdInfo.quote_id} is not a current MCP server-owned quote. It looks like a frontend or foreign-system token, so ${tool} cannot continue from it directly. Prepare a fresh live quote first.`
       : isRuntimeQuote
-        ? `Requested quote_id ${quoteIdInfo.quote_id} is not available in the current MCP runtime store. It may already be expired or may have been minted by another deployment.`
-        : `Requested quote_id ${quoteIdInfo.quote_id || "N/A"} is not available for booking execution in the current MCP runtime. Prepare a fresh live quote first.`;
+        ? `Requested booking quote input ${quoteIdInfo.quote_id} is not available in the current MCP runtime store. It may already be expired or may have been minted by another deployment.`
+        : `Requested booking quote input ${quoteIdInfo.quote_id || "N/A"} is not available for booking execution in the current MCP runtime. Prepare a fresh live quote first.`;
   const presenterLines = [
-    "Open with: The requested quote_id is not usable for booking execution in the current MCP runtime.",
+    "Open with: The requested booking quote input is not usable for booking execution in the current MCP runtime.",
     parsedSearchQuote
       ? "Angle: This token encodes search context only. It is not an expired booking quote; it never represented a frozen live room/rate selection."
       : isForeignQuote
-      ? "Angle: This looks like a frontend or foreign-system quote token, not the short-lived server-owned quote_id minted by prepare_booking_quote."
+      ? "Angle: This looks like a frontend or foreign-system token, not the short-lived server-owned prepared booking quote minted by prepare_booking_quote."
       : "Angle: Current MCP quote_ids are short-lived and runtime-scoped, so missing ids should be treated as expired-or-foreign rather than silently reused.",
     paymentMethod
       ? `Decision split: Mint a fresh quote first, then retry create_booking_intent with payment_method ${paymentMethod}.`
@@ -682,7 +687,7 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
       ]),
     ],
     warnings: [
-      "create_booking_intent only accepts active server-owned quote_id values minted by prepare_booking_quote in this MCP deployment.",
+      "create_booking_intent only accepts active server-owned prepared_quote_id or quote_id values minted by prepare_booking_quote in this MCP deployment.",
       ...(parsedSearchQuote
         ? ["This token is search-stage context, not an expired lockable quote and not a frozen room/rate selection."]
         : []),
@@ -715,6 +720,7 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
       entity: "quote",
       reason: "quote_unavailable",
       requested_quote: {
+        prepared_quote_id: quoteIdInfo.quote_id,
         quote_id: quoteIdInfo.quote_id,
         quote_id_origin: quoteIdInfo.origin,
         payment_method: paymentMethod,
@@ -733,7 +739,7 @@ function buildMissingQuoteRecoveryResult(tool, params = {}, options = {}) {
         booking_readiness: {
           status: "needs_fresh_quote",
         },
-        recommended_opening: "The requested quote_id is not usable for booking execution in the current MCP runtime.",
+        recommended_opening: "The requested booking quote input is not usable for booking execution in the current MCP runtime.",
         recommended_angle: presenterLines[1],
         next_question: "Confirm the current live hotel_id / room_id / rate_id selection before re-creating the quote.",
         presenter_lines: presenterLines,
@@ -940,7 +946,7 @@ function buildQuoteRequiredInputs(quote, options = {}) {
   const executionMode = normalizeExecutionMode(options);
   const requirements = {
     create_booking_intent: [
-      "quote_id",
+      "prepared_quote_id",
       "payment_method",
       "guest_primary.first_name",
       "guest_primary.last_name",
@@ -1060,7 +1066,7 @@ function buildQuoteStateResult(tool, quote, options = {}) {
           buildNextTool(
             "create_booking_intent",
             "Use this active quote as the source of truth for traveler details and payment-path selection.",
-            ["quote_id", "payment_method", "guest_primary", "contact"]
+            ["prepared_quote_id", "payment_method", "guest_primary", "contact"]
           ),
         ]
       : [
@@ -1079,7 +1085,8 @@ function buildQuoteStateResult(tool, quote, options = {}) {
       "Frozen quote pricing remains aligned to display_total_cny / supplier_total_cny / service_fee_cny semantics at quote-creation time.",
     ],
     selection_hints: [
-      "Only use an active quote_id for create_booking_intent.",
+      "Only use an active prepared_quote_id or quote_id for create_booking_intent.",
+      "Prefer data.prepared_quote_id from prepare_booking_quote instead of reusing any search-context or frontend token.",
       "If the quote is expired, regenerate it instead of continuing with the old quote snapshot.",
       ...(executionMode === EXECUTOR_HANDOFF_MODE
         ? [
@@ -1098,6 +1105,7 @@ function buildQuoteStateResult(tool, quote, options = {}) {
     },
     data: {
       entity: "quote",
+      prepared_quote_id: quote.quote_id,
       quote: quoteSummary,
       quote_state: quoteState,
       confirmation_pack: buildQuoteConfirmationPack(quote),
@@ -1370,10 +1378,10 @@ function buildIntentDecisionSummary(tool, intentSummary, options = {}) {
   if (executorHandoff) {
     if (tool === "create_booking_intent") {
       if (intentSummary.status === "awaiting_card") {
-        return `Created booking intent ${intentSummary.intent_id} for ${hotelName} / ${rateName}. Due-now amount is ${dueNow} CNY and the intent is ready for Bitvoya secure checkout handoff.`;
+        return `Created booking intent ${intentSummary.intent_id} for ${hotelName} / ${rateName}. Due-now amount is ${dueNow} CNY and the intent is ready for Bitvoya secure checkout handoff. Do not refresh pricing again unless a later state check says the quote expired or the traveler changes selection.`;
       }
 
-      return `Created booking intent ${intentSummary.intent_id} for ${hotelName} / ${rateName}. Due-now amount is ${dueNow} CNY and downstream completion continues through Bitvoya secure handoff plus internal executor.`;
+      return `Created booking intent ${intentSummary.intent_id} for ${hotelName} / ${rateName}. Due-now amount is ${dueNow} CNY and downstream completion continues through Bitvoya secure handoff plus internal executor. Do not restart quote work unless a later state check says it is required.`;
     }
 
     if (tool === "attach_booking_card") {
@@ -1569,6 +1577,7 @@ function buildIntentSelectionHints(intentSummary, options = {}) {
     const hints = [
       "Use intent.ready_checks and execution_boundary.handoff_stage to determine whether Bitvoya internal fulfillment is waiting on quote refresh, card collection, backend submit, or payment creation.",
       "In executor_handoff mode, external agents should stop after create_booking_intent, surface data.secure_handoff to the traveler, and then inspect later state via get_booking_state.",
+      "After create_booking_intent succeeds, do not reopen get_hotel_rooms or prepare_booking_quote unless get_booking_state explicitly shows an expired quote or the traveler changes room/rate selection.",
     ];
 
     if (intentSummary?.payment_method === "guarantee") {
@@ -1581,6 +1590,7 @@ function buildIntentSelectionHints(intentSummary, options = {}) {
   const hints = [
     "Use intent.ready_checks to determine whether the flow is blocked on card, submission, or payment session creation.",
     "Do not create a payment session before submit_booking_intent returns an order-backed intent.",
+    "After create_booking_intent succeeds, do not reopen get_hotel_rooms or prepare_booking_quote unless the quote has expired or the traveler changes selection.",
   ];
 
   if (intentSummary?.payment_method === "guarantee") {
@@ -1603,6 +1613,111 @@ function buildIntentWarnings(intentSummary) {
   }
 
   return warnings;
+}
+
+function summarizeIntentBenefitLabels(intentSummary, limit = 3) {
+  const quoteSnapshot = intentSummary?.quote_snapshot || {};
+  const benefits = quoteSnapshot?.benefits_snapshot || {};
+  const labels = uniqueBy(
+    [
+      ...asArray(benefits?.interests).map((item) => firstNonEmpty(item?.tag, item?.name)),
+      ...asArray(benefits?.promotions).map((item) => firstNonEmpty(item?.tag, item?.name)),
+    ].filter(Boolean),
+    (value) => String(value)
+  );
+
+  return labels.slice(0, limit);
+}
+
+function buildIntentAgentBrief(intentSummary, options = {}) {
+  const executionMode = normalizeExecutionMode(options);
+  const executorHandoff = executionMode === EXECUTOR_HANDOFF_MODE;
+  const quoteSnapshot = intentSummary?.quote_snapshot || {};
+  const hotelSnapshot = quoteSnapshot?.hotel_snapshot || {};
+  const roomSnapshot = quoteSnapshot?.room_snapshot || {};
+  const rateSnapshot = quoteSnapshot?.rate_snapshot || {};
+  const hotelName = hotelSnapshot?.hotel_name || "selected hotel";
+  const roomName = roomSnapshot?.room_name || null;
+  const rateName = rateSnapshot?.rate_name || "selected rate";
+  const dueNow = intentSummary?.amount_due_now_cny ?? 0;
+  const payAtHotel = intentSummary?.amount_due_at_hotel_cny ?? 0;
+  const benefitLabels = summarizeIntentBenefitLabels(intentSummary);
+  const benefitHeadline =
+    benefitLabels.length > 0 ? `Attached perks include ${benefitLabels.join(", ")}.` : null;
+  const hotelFocus = firstNonEmpty(
+    hotelSnapshot?.grounding_excerpt?.why_stay_here,
+    hotelSnapshot?.grounding_excerpt?.luxury_fit
+  );
+  const cityFocus = firstNonEmpty(
+    hotelSnapshot?.city_grounding_excerpt?.stay_area_recommendation,
+    hotelSnapshot?.city_grounding_excerpt?.city_character
+  );
+  const proofPoints = [
+    roomName ? `${roomName} / ${rateName}` : rateName,
+    `Due now ${dueNow} CNY`,
+    payAtHotel > 0 ? `Pay at hotel ${payAtHotel} CNY` : null,
+  ].filter(Boolean);
+
+  if (executorHandoff && intentSummary?.status === "awaiting_card") {
+    const recommendedOpening =
+      `The booking intent is already created for ${hotelName}. Do not refresh prices or re-lock the quote now; move straight into Bitvoya secure checkout.`;
+    const recommendedAngle =
+      `Keep the answer confirmation-first: intent created, due now ${dueNow} CNY, remaining ${payAtHotel} CNY at hotel, and guarantee card must be completed on Bitvoya-hosted checkout.`;
+    const branches = [
+      "Send the traveler to data.secure_handoff.launch_url now instead of reopening get_hotel_rooms or prepare_booking_quote.",
+      "Only re-price if get_booking_state later says the quote expired or the traveler changes room/rate selection.",
+    ];
+    const nextQuestion =
+      "Do not ask for raw card details in chat. Ask the traveler only to open the secure handoff page if they have not done so yet.";
+
+    return {
+      mode: "booking_intent_ready_for_handoff",
+      recommended_opening: recommendedOpening,
+      recommended_angle: recommendedAngle,
+      hotel_focus: hotelFocus,
+      city_focus: cityFocus,
+      perk_focus: benefitHeadline,
+      proof_points: proofPoints,
+      branches,
+      next_question: nextQuestion,
+      presenter_lines: [
+        `Open with: ${recommendedOpening}`,
+        `Angle: ${recommendedAngle}`,
+        ...(hotelFocus ? [`Hotel story: ${hotelFocus}`] : []),
+        ...(cityFocus ? [`City / area: ${cityFocus}`] : []),
+        ...(benefitHeadline ? [`Perks: ${benefitHeadline}`] : []),
+        ...(proofPoints.length > 0 ? [`Sell with: ${proofPoints.join(" | ")}`] : []),
+        `Decision split: ${branches.join(" | ")}`,
+        `Ask next: ${nextQuestion}`,
+      ],
+    };
+  }
+
+  const recommendedOpening = `The booking intent already exists for ${hotelName}. Keep the answer in confirmation mode rather than restarting quote work.`;
+  const recommendedAngle = `Lead with what is already locked: ${rateName}, due now ${dueNow} CNY, and the next operational step from get_booking_state or secure handoff.`;
+  const nextQuestion = executorHandoff
+    ? "Ask whether the traveler is ready to continue to Bitvoya secure checkout."
+    : "Ask whether to continue with the next execution step instead of re-pricing.";
+
+  return {
+    mode: "booking_intent_confirmation",
+    recommended_opening: recommendedOpening,
+    recommended_angle: recommendedAngle,
+    hotel_focus: hotelFocus,
+    city_focus: cityFocus,
+    perk_focus: benefitHeadline,
+    proof_points: proofPoints,
+    next_question: nextQuestion,
+    presenter_lines: [
+      `Open with: ${recommendedOpening}`,
+      `Angle: ${recommendedAngle}`,
+      ...(hotelFocus ? [`Hotel story: ${hotelFocus}`] : []),
+      ...(cityFocus ? [`City / area: ${cityFocus}`] : []),
+      ...(benefitHeadline ? [`Perks: ${benefitHeadline}`] : []),
+      ...(proofPoints.length > 0 ? [`Sell with: ${proofPoints.join(" | ")}`] : []),
+      `Ask next: ${nextQuestion}`,
+    ],
+  };
 }
 
 function buildIntentResultStatus(intentSummary) {
@@ -1698,6 +1813,7 @@ function buildIntentExecutionResult(tool, intent, options = {}) {
       blocking_requirements: buildIntentMissingRequirements(intentSummary, { execution_mode: executionMode }),
       execution_boundary: buildIntentExecutionBoundary(intentSummary, options),
       execution_state: executionState,
+      agent_brief: buildIntentAgentBrief(intentSummary, options),
       secure_handoff: secureHandoff,
     },
   });
@@ -2309,27 +2425,10 @@ export async function prepareBookingQuote(api, db, store, config, params, option
   const recommendedNextTools = [
     buildNextTool(
       "create_booking_intent",
-      "Create the server-owned booking intent from this frozen quote before any submit or payment step.",
-      ["quote_id", "payment_method", "guest_primary", "contact"]
-    ),
-    buildNextTool(
-      "get_hotel_rooms",
-      "Refresh live inventory if the quote expires or if the traveler changes room/rate selection.",
-      ["hotel_id", "checkin", "checkout"]
+      "Create the server-owned booking intent from this frozen quote now. Do not refresh live room inventory again unless the traveler changes selection or the quote later expires.",
+      ["prepared_quote_id", "payment_method", "guest_primary", "contact"]
     ),
   ];
-
-  if (executionMode === INTERNAL_EXECUTION_MODE && quoteRecord.payment_options?.guarantee_supported) {
-    recommendedNextTools.splice(
-      1,
-      0,
-      buildNextTool(
-        "attach_booking_card",
-        "Guarantee flow will require a card after create_booking_intent and before submit_booking_intent.",
-        ["intent_id", "card_reference_id or pan", "expiry"]
-      )
-    );
-  }
 
   return buildAgenticToolResult({
     tool: "prepare_booking_quote",
@@ -2361,6 +2460,8 @@ export async function prepareBookingQuote(api, db, store, config, params, option
     ],
     selection_hints: [
       "Use payment_paths.prepay or payment_paths.guarantee to choose payment_method for create_booking_intent.",
+      "Use data.prepared_quote_id for create_booking_intent. Do not reuse search-context or frontend quote-like tokens.",
+      "After a successful prepare_booking_quote, the default next step is create_booking_intent. Do not call get_hotel_rooms or prepare_booking_quote again unless the traveler changes room/rate selection or the quote expires.",
       "Do not reuse quote_id after expires_at; prepare a fresh quote if the hold window is gone.",
       ...(executionMode === INTERNAL_EXECUTION_MODE
         ? ["Guarantee requires card attachment after intent creation, even when due-now amount is zero."]
@@ -2378,6 +2479,7 @@ export async function prepareBookingQuote(api, db, store, config, params, option
     },
     data: {
       found: true,
+      prepared_quote_id: quoteRecord.quote_id,
       quote: quoteSummary,
       confirmation_pack: buildQuoteConfirmationPack(quoteRecord),
       payment_paths: {
@@ -2389,7 +2491,8 @@ export async function prepareBookingQuote(api, db, store, config, params, option
       booking_readiness: {
         quote_valid_now: quoteRecord.expires_at_ms > Date.now(),
         next_required_step: "create_booking_intent",
-        next_required_inputs: ["quote_id", "payment_method", "guest_primary", "contact"],
+        next_required_inputs: ["prepared_quote_id", "payment_method", "guest_primary", "contact"],
+        do_not_refresh_quote_before_intent: true,
       },
       secure_handoff: buildQuoteSecureHandoff(quoteRecord, options),
     },
@@ -2398,7 +2501,8 @@ export async function prepareBookingQuote(api, db, store, config, params, option
 
 export async function createBookingIntent(store, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
-  const quote = normalizeQuoteCurrencySemantics(store.getQuote(params.quote_id));
+  const preparedQuoteId = resolvePreparedQuoteId(params);
+  const quote = normalizeQuoteCurrencySemantics(store.getQuote(preparedQuoteId));
   const requestAccountBinding = buildAccountBinding(options);
 
   if (!quote) {
@@ -2769,6 +2873,7 @@ export async function refreshBookingState(api, store, params, options = {}) {
 
 export async function getBookingState(store, params, options = {}) {
   const executionMode = normalizeExecutionMode(options);
+  const preparedQuoteId = resolvePreparedQuoteId(params);
   if (params.intent_id) {
     const intent = store.getIntent(params.intent_id);
     if (!intent) {
@@ -2797,8 +2902,8 @@ export async function getBookingState(store, params, options = {}) {
     return buildIntentExecutionResult("get_booking_state", intent, options);
   }
 
-  if (params.quote_id) {
-    const quote = store.getQuote(params.quote_id);
+  if (preparedQuoteId) {
+    const quote = store.getQuote(preparedQuoteId);
     if (!quote) {
       return buildMissingQuoteRecoveryResult("get_booking_state", params, options);
     }
@@ -2806,5 +2911,5 @@ export async function getBookingState(store, params, options = {}) {
     return buildQuoteStateResult("get_booking_state", quote, options);
   }
 
-  throw new Error("One of intent_id or quote_id is required.");
+  throw new Error("One of intent_id, prepared_quote_id, or quote_id is required.");
 }

@@ -73,6 +73,18 @@ Depending on hotel, rate, and stay dates, Bitvoya can surface premium value sign
 
 The point is not only to find a room, but to help the agent explain why one luxury stay is better value than another.
 
+## Which models work best with Bitvoya MCP?
+
+If your MCP client lets you choose the model, Bitvoya recommends stronger tool-using models such as `Claude 4.6` and `GPT-5.4`, or comparable flagship models.
+
+That is not about raw prose quality alone. In practice, stronger models are more likely to:
+
+- call the right tool instead of guessing
+- follow the correct booking sequence
+- preserve pricing semantics and state transitions across longer workflows
+
+Smaller models may still be usable, but they are more likely to skip tool calls or confuse quote, intent, and state steps.
+
 ## Does the agent key give direct database access?
 
 No.

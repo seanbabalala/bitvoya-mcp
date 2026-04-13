@@ -753,7 +753,7 @@ server.registerTool(
   "prepare_booking_quote",
   {
     description:
-      `Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection. ${relativeDateInstruction}`,
+      `Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection. This is the only public MCP tool that mints a booking quote usable by create_booking_intent. ${relativeDateInstruction}`,
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: false,
@@ -798,14 +798,23 @@ server.registerTool(
   "create_booking_intent",
   {
     description:
-      "Create a server-owned booking intent from a valid quote, with guest/contact data and payment-path selection.",
+      "Create a server-owned booking intent from a valid prepared booking quote, with guest/contact data and payment-path selection. Only use the quote returned by prepare_booking_quote; never pass search-context or frontend page tokens.",
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
-    inputSchema: {
-      quote_id: z.string().min(1).describe("Quote id from prepare_booking_quote."),
+    inputSchema: z.object({
+      prepared_quote_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Preferred prepared booking quote id from prepare_booking_quote. This is the only quote input that should be used for booking execution."),
+      quote_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Deprecated alias for prepared_quote_id. Only pass the short-lived server-owned quote returned by prepare_booking_quote; never pass search-context or frontend quote-like tokens."),
       payment_method: z.enum(["prepay", "guarantee"]).describe("Selected payment path."),
       guest_primary: z.object({
         first_name: z.string().min(1),
@@ -839,11 +848,20 @@ server.registerTool(
         .optional(),
       arrival_time: z.string().optional(),
       special_requests: z.array(z.string().min(1)).optional(),
-      user_info: z.record(z.string(), z.unknown()).optional().describe("Optional user snapshot for later legacy-submit bridging."),
-    },
+      user_info: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe(
+          "Optional user snapshot for later legacy-submit bridging. You may also pass user_info.preferred_language or user_info.lang so Bitvoya secure checkout follows the traveler language. Supported display languages are English, Chinese, Japanese, and Korean; other languages fall back to English."
+        ),
+    }).refine((value) => Boolean(value.prepared_quote_id || value.quote_id), {
+      message: "One of prepared_quote_id or quote_id is required.",
+      path: ["prepared_quote_id"],
+    }),
   },
-  async ({ quote_id, payment_method, guest_primary, contact, companions, children, arrival_time, special_requests, user_info }, extra) => {
+  async ({ prepared_quote_id, quote_id, payment_method, guest_primary, contact, companions, children, arrival_time, special_requests, user_info }, extra) => {
     const payload = await createBookingIntent(store, {
+      prepared_quote_id,
       quote_id,
       payment_method,
       guest_primary,
@@ -912,23 +930,30 @@ server.registerTool(
   "get_booking_state",
   {
     description:
-      "Inspect the current local state of a booking quote or booking intent, including bridged backend order and payment-session state when available.",
+      "Inspect the current local state of a prepared booking quote or booking intent, including bridged backend order and payment-session state when available.",
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: true,
       openWorldHint: false,
     },
-    inputSchema: {
-      quote_id: z.string().optional().describe("Quote id."),
+    inputSchema: z.object({
+      prepared_quote_id: z
+        .string()
+        .optional()
+        .describe("Preferred prepared booking quote id from prepare_booking_quote."),
+      quote_id: z
+        .string()
+        .optional()
+        .describe("Deprecated alias for prepared_quote_id."),
       intent_id: z.string().optional().describe("Intent id."),
-    },
+    }).refine((value) => Boolean(value.intent_id || value.prepared_quote_id || value.quote_id), {
+      message: "One of intent_id, prepared_quote_id, or quote_id is required.",
+      path: ["intent_id"],
+    }),
   },
-  async ({ quote_id, intent_id }) => {
-    if (!quote_id && !intent_id) {
-      throw new Error("One of quote_id or intent_id is required.");
-    }
-
+  async ({ prepared_quote_id, quote_id, intent_id }) => {
     const payload = await getBookingState(store, {
+      prepared_quote_id,
       quote_id,
       intent_id,
     }, {

@@ -12,6 +12,8 @@ import {
 } from "../format.mjs";
 import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
 
+const SEARCH_STAGE_PRICE_TIMEOUT_MS = 1600;
+
 function toPlaceholders(count) {
   return new Array(count).fill("?").join(", ");
 }
@@ -43,12 +45,60 @@ function normalizeImageUrl(value) {
   return `https://app.bitvoya.com${firstImage.startsWith("/") ? "" : "/"}${firstImage}`;
 }
 
+function normalizeTagTranslationValue(value, maxLength = null) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return Number.isInteger(maxLength) ? compactText(normalized, maxLength) : normalized;
+}
+
+function normalizeTagTranslationMap(value, maxLength = null) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const entries = Object.entries(value)
+    .map(([key, entryValue]) => [key, normalizeTagTranslationValue(entryValue, maxLength)])
+    .filter(([, entryValue]) => Boolean(entryValue));
+
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+function normalizeTagI18n(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const normalized = {
+    tag: normalizeTagTranslationMap(value.tag),
+    name: normalizeTagTranslationMap(value.name),
+    text: normalizeTagTranslationMap(value.text, 220),
+  };
+
+  return normalized.tag || normalized.name || normalized.text
+    ? {
+        ...(normalized.tag ? { tag: normalized.tag } : {}),
+        ...(normalized.name ? { name: normalized.name } : {}),
+        ...(normalized.text ? { text: normalized.text } : {}),
+      }
+    : null;
+}
+
 function mapTag(item) {
+  const i18n = normalizeTagI18n(item?.i18n);
+
   return {
     id: normalizeId(item?.id),
     tag: item?.tag || null,
     name: item?.name || null,
     text: compactText(item?.text, 220),
+    ...(i18n ? { i18n } : {}),
   };
 }
 
@@ -2099,6 +2149,10 @@ function describeHotelAudienceTag(tag) {
 function buildAgentBriefPresenterLines({
   recommendedOpening = null,
   recommendedAngle = null,
+  hotelFocus = null,
+  cityFocus = null,
+  perkFocus = null,
+  proofPoints = [],
   sellThisWhen = [],
   branches = [],
   watchouts = [],
@@ -2112,6 +2166,27 @@ function buildAgentBriefPresenterLines({
 
   if (recommendedAngle) {
     lines.push(`Angle: ${compactText(recommendedAngle, 220)}`);
+  }
+
+  if (hotelFocus) {
+    lines.push(`Hotel story: ${compactText(hotelFocus, 220)}`);
+  }
+
+  if (cityFocus) {
+    lines.push(`City / area: ${compactText(cityFocus, 220)}`);
+  }
+
+  if (perkFocus) {
+    lines.push(`Perks: ${compactText(perkFocus, 220)}`);
+  }
+
+  if (asArray(proofPoints).length > 0) {
+    lines.push(
+      `Sell with: ${asArray(proofPoints)
+        .slice(0, 3)
+        .map((item) => compactText(item, 140))
+        .join(" | ")}`
+    );
   }
 
   if (asArray(sellThisWhen).length > 0) {
@@ -2213,6 +2288,37 @@ function buildSearchAgentBrief({
     ),
     180
   );
+  const hotelFocus = compactText(
+    firstNonEmpty(
+      topResult?.static_story?.positioning,
+      topResult?.grounding_excerpt?.why_stay_here,
+      topResult?.grounding_excerpt?.luxury_fit
+    ),
+    220
+  );
+  const cityFocus = compactText(
+    firstNonEmpty(
+      topResult?.location_brief?.city_context,
+      topResult?.city_grounding_excerpt?.stay_area_recommendation,
+      topResult?.city_grounding_excerpt?.city_character
+    ),
+    220
+  );
+  const perkFocus = compactText(
+    firstNonEmpty(
+      topResult?.benefit_brief?.headline,
+      selectionGuide?.strongest_benefits?.headline
+    ),
+    220
+  );
+  const proofPoints = uniqueTexts(
+    [
+      topResult?.location_brief?.headline,
+      topResult?.nearby_pois_brief?.headline,
+      ...(asArray(topResult?.decision_brief?.choose_reasons).slice(0, 2)),
+    ],
+    3
+  );
   const sellThisWhen = asArray(topResult?.decision_brief?.best_for).map(describeHotelAudienceTag).filter(Boolean);
   const watchouts = asArray(topResult?.decision_brief?.tradeoffs).slice(0, 2);
   const nextQuestion = stayContext
@@ -2223,6 +2329,10 @@ function buildSearchAgentBrief({
     mode: "hotel_search",
     recommended_opening: recommendedOpening,
     recommended_angle: recommendedAngle,
+    hotel_focus: hotelFocus,
+    city_focus: cityFocus,
+    perk_focus: perkFocus,
+    proof_points: proofPoints,
     sell_this_when: sellThisWhen,
     branches,
     watchouts,
@@ -2230,6 +2340,10 @@ function buildSearchAgentBrief({
     presenter_lines: buildAgentBriefPresenterLines({
       recommendedOpening,
       recommendedAngle,
+      hotelFocus,
+      cityFocus,
+      perkFocus,
+      proofPoints,
       sellThisWhen,
       branches,
       watchouts,
@@ -2246,6 +2360,27 @@ function buildHotelDetailAgentBrief(hotel, decisionBrief = null) {
       2
     ).join(" "),
     200
+  );
+  const hotelFocus = compactText(
+    firstNonEmpty(
+      hotel?.static_story?.positioning,
+      hotel?.grounding_excerpt?.why_stay_here,
+      hotel?.grounding_excerpt?.luxury_fit
+    ),
+    220
+  );
+  const cityFocus = compactText(
+    firstNonEmpty(
+      hotel?.location_brief?.city_context,
+      hotel?.city_grounding_excerpt?.stay_area_recommendation,
+      hotel?.city_grounding_excerpt?.city_character
+    ),
+    220
+  );
+  const perkFocus = compactText(firstNonEmpty(hotel?.benefit_brief?.headline), 220);
+  const proofPoints = uniqueTexts(
+    [hotel?.location_brief?.headline, hotel?.nearby_pois_brief?.headline, hotel?.grounding_excerpt?.planner_highlights?.[0]],
+    3
   );
   const sellThisWhen = asArray(decisionBrief?.best_for).map(describeHotelAudienceTag).filter(Boolean);
   const branches = uniqueTexts(
@@ -2269,6 +2404,10 @@ function buildHotelDetailAgentBrief(hotel, decisionBrief = null) {
     mode: "hotel_detail",
     recommended_opening: recommendedOpening,
     recommended_angle: recommendedAngle,
+    hotel_focus: hotelFocus,
+    city_focus: cityFocus,
+    perk_focus: perkFocus,
+    proof_points: proofPoints,
     sell_this_when: sellThisWhen,
     branches,
     watchouts,
@@ -2276,6 +2415,10 @@ function buildHotelDetailAgentBrief(hotel, decisionBrief = null) {
     presenter_lines: buildAgentBriefPresenterLines({
       recommendedOpening,
       recommendedAngle,
+      hotelFocus,
+      cityFocus,
+      perkFocus,
+      proofPoints,
       sellThisWhen,
       branches,
       watchouts,
@@ -2333,6 +2476,32 @@ function buildHotelRoomsAgentBrief({
       ).join(" "),
       220
     );
+    const hotelFocus = compactText(
+      firstNonEmpty(
+        hotel?.static_story?.positioning,
+        hotel?.grounding_excerpt?.why_stay_here,
+        hotel?.grounding_excerpt?.luxury_fit
+      ),
+      220
+    );
+    const cityFocus = compactText(
+      firstNonEmpty(
+        hotel?.location_brief?.city_context,
+        hotel?.city_grounding_excerpt?.stay_area_recommendation,
+        hotel?.city_grounding_excerpt?.city_character
+      ),
+      220
+    );
+    const perkFocus = compactText(firstNonEmpty(hotel?.benefit_brief?.headline), 220);
+    const proofPoints = uniqueTexts(
+      [
+        `${primaryRecommendation.room_name} / ${primaryRecommendation.rate_name}`,
+        displayTotal !== null ? `Guest-facing total ${displayTotal} CNY` : null,
+        dueNow !== null ? `Guarantee due-now ${dueNow} CNY` : null,
+        hotel?.location_brief?.headline,
+      ],
+      4
+    );
     const nextQuestion = "Ask whether the traveler wants lowest total, better flexibility, or the strongest attached perks before preparing a quote.";
 
     return {
@@ -2344,12 +2513,20 @@ function buildHotelRoomsAgentBrief({
       },
       recommended_opening: recommendedOpening,
       recommended_angle: recommendedAngle,
+      hotel_focus: hotelFocus,
+      city_focus: cityFocus,
+      perk_focus: perkFocus,
+      proof_points: proofPoints,
       branches,
       watchouts: asArray(primaryRecommendation?.tradeoffs).slice(0, 2),
       next_question: nextQuestion,
       presenter_lines: buildAgentBriefPresenterLines({
         recommendedOpening,
         recommendedAngle,
+        hotelFocus,
+        cityFocus,
+        perkFocus,
+        proofPoints,
         branches,
         watchouts: asArray(primaryRecommendation?.tradeoffs).slice(0, 2),
         nextQuestion,
@@ -2381,6 +2558,27 @@ function buildHotelRoomsAgentBrief({
       ).join(" "),
       220
     );
+    const hotelFocus = compactText(
+      firstNonEmpty(
+        hotel?.static_story?.positioning,
+        hotel?.grounding_excerpt?.why_stay_here,
+        hotel?.grounding_excerpt?.luxury_fit
+      ),
+      220
+    );
+    const cityFocus = compactText(
+      firstNonEmpty(
+        hotel?.location_brief?.city_context,
+        hotel?.city_grounding_excerpt?.stay_area_recommendation,
+        hotel?.city_grounding_excerpt?.city_character
+      ),
+      220
+    );
+    const perkFocus = compactText(firstNonEmpty(hotel?.benefit_brief?.headline), 220);
+    const proofPoints = uniqueTexts(
+      [hotel?.location_brief?.headline, hotel?.nearby_pois_brief?.headline],
+      2
+    );
     const branches = uniqueTexts(
       [
         unresolvedIdentity
@@ -2401,12 +2599,20 @@ function buildHotelRoomsAgentBrief({
       },
       recommended_opening: recommendedOpening,
       recommended_angle: recommendedAngle,
+      hotel_focus: hotelFocus,
+      city_focus: cityFocus,
+      perk_focus: perkFocus,
+      proof_points: proofPoints,
       branches,
       watchouts: [],
       next_question: nextQuestion,
       presenter_lines: buildAgentBriefPresenterLines({
         recommendedOpening,
         recommendedAngle,
+        hotelFocus,
+        cityFocus,
+        perkFocus,
+        proofPoints,
         branches,
         nextQuestion,
       }),
@@ -2424,6 +2630,27 @@ function buildHotelRoomsAgentBrief({
       hotel?.location_brief?.headline
     ),
     200
+  );
+  const hotelFocus = compactText(
+    firstNonEmpty(
+      hotel?.static_story?.positioning,
+      hotel?.grounding_excerpt?.why_stay_here,
+      hotel?.grounding_excerpt?.luxury_fit
+    ),
+    220
+  );
+  const cityFocus = compactText(
+    firstNonEmpty(
+      hotel?.location_brief?.city_context,
+      hotel?.city_grounding_excerpt?.stay_area_recommendation,
+      hotel?.city_grounding_excerpt?.city_character
+    ),
+    220
+  );
+  const perkFocus = compactText(firstNonEmpty(hotel?.benefit_brief?.headline), 220);
+  const proofPoints = uniqueTexts(
+    [hotel?.location_brief?.headline, hotel?.nearby_pois_brief?.headline],
+    2
   );
   const branches = uniqueTexts(
     [
@@ -2446,12 +2673,20 @@ function buildHotelRoomsAgentBrief({
     },
     recommended_opening: recommendedOpening,
     recommended_angle: recommendedAngle,
+    hotel_focus: hotelFocus,
+    city_focus: cityFocus,
+    perk_focus: perkFocus,
+    proof_points: proofPoints,
     branches,
     watchouts: [],
     next_question: nextQuestion,
     presenter_lines: buildAgentBriefPresenterLines({
       recommendedOpening,
       recommendedAngle,
+      hotelFocus,
+      cityFocus,
+      perkFocus,
+      proofPoints,
       branches,
       nextQuestion,
     }),
@@ -2982,6 +3217,11 @@ async function loadPriceMap(api, hotelIds, stayContext) {
       checkin: stayContext.checkin,
       checkout: stayContext.checkout,
       adultNum: stayContext.adult_num,
+    }, {
+      // Search-stage prices are a helpful signal, but MCP discovery should return
+      // a grounded shortlist even when batch price enrichment is slower than the
+      // chat tool budget.
+      timeoutMs: SEARCH_STAGE_PRICE_TIMEOUT_MS,
     });
   } catch (error) {
     if (!isLikelyTransientLiveError(error)) {
@@ -3021,6 +3261,108 @@ async function loadHotelDetailsForSuggestions(api, suggestions) {
   });
 
   return Promise.all(detailPromises);
+}
+
+function countRawHotelBenefits(hotel) {
+  return (
+    asArray(hotel?.profiles?.INTEREST).length +
+    asArray(hotel?.profiles?.PROMOTION).length
+  );
+}
+
+function getRankingWorkingSetCap(params = {}, options = {}) {
+  const limit = Math.max(1, Number(params?.limit || options?.limit || 5));
+  const offset = Math.max(0, Number(params?.offset || options?.offset || 0));
+  const query = String(options?.query || "").trim();
+  const base =
+    options?.sectionType === "city_inventory_shortlist" && !query
+      ? Math.max((offset + limit) * 8, 72)
+      : Math.max((offset + limit) * 6, 48);
+
+  return Math.min(base, 120);
+}
+
+function scoreHotelForRankingWorkingSet(hotel, params = {}, options = {}) {
+  const priorityProfile = String(params?.priority_profile || "balanced").trim();
+  const preferBenefits = Boolean(params?.prefer_benefits) || priorityProfile === "perks";
+  const query = String(options?.query || "").trim();
+  const rawName = normalizeSearchText(
+    firstNonEmpty(hotel?.nameEn, hotel?.name, hotel?.profiles?.BRAND?.nameEn, hotel?.profiles?.BRAND?.name)
+  );
+  const rawCity = normalizeSearchText(firstNonEmpty(hotel?.profiles?.CITY?.nameEn, hotel?.profiles?.CITY?.name));
+  const normalizedQuery = normalizeSearchText(query);
+  const benefitCount = countRawHotelBenefits(hotel);
+  const starRating = asNullableNumber(firstNonEmpty(hotel?.starRate, hotel?.star_rating, hotel?.star)) || 0;
+  const reviewScore =
+    asNullableNumber(firstNonEmpty(hotel?.reviewScore, hotel?.commentScore, hotel?.score)) || 0;
+
+  let score = 0;
+
+  if (normalizedQuery) {
+    if (rawName === normalizedQuery) {
+      score += 120;
+    } else if (rawName.startsWith(normalizedQuery)) {
+      score += 90;
+    } else if (rawName.includes(normalizedQuery)) {
+      score += 64;
+    } else if (rawCity && normalizedQuery.includes(rawCity)) {
+      score += 24;
+    }
+  }
+
+  if (preferBenefits) {
+    score += benefitCount * 28;
+  } else {
+    score += Math.min(benefitCount, 3) * 10;
+  }
+
+  if (priorityProfile === "luxury") {
+    score += starRating * 15 + reviewScore * 2.2;
+  } else if (priorityProfile === "perks") {
+    score += starRating * 9 + reviewScore * 1.2;
+  } else {
+    score += starRating * 10 + reviewScore * 1.5;
+  }
+
+  return score;
+}
+
+function selectHotelsForRankingWorkingSet(rawHotels, params = {}, options = {}) {
+  const uniqueHotels = uniqueBy(asArray(rawHotels), (hotel) => normalizeId(hotel?.id));
+  const workingSetCap = getRankingWorkingSetCap(params, options);
+
+  if (uniqueHotels.length <= workingSetCap) {
+    return {
+      hotels: uniqueHotels,
+      raw_total: uniqueHotels.length,
+      working_set_total: uniqueHotels.length,
+      working_set_limited: false,
+    };
+  }
+
+  const selected = uniqueHotels
+    .map((hotel, index) => ({
+      hotel,
+      index,
+      score: scoreHotelForRankingWorkingSet(hotel, params, options),
+    }))
+    .sort((left, right) => {
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+
+      return left.index - right.index;
+    })
+    .slice(0, workingSetCap)
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.hotel);
+
+  return {
+    hotels: selected,
+    raw_total: uniqueHotels.length,
+    working_set_total: selected.length,
+    working_set_limited: true,
+  };
 }
 
 function buildSearchContext({ query, cityId, cityName, resolvedCity, strategy, offset, limit, stayContext }) {
@@ -3219,7 +3561,8 @@ function rankSearchHotels(normalizedHotels, rawHotelMap, params = {}, searchCont
 }
 
 async function buildRankedHotelSection(api, db, rawHotels, params, options = {}) {
-  const uniqueHotels = uniqueBy(asArray(rawHotels), (hotel) => normalizeId(hotel?.id));
+  const workingSet = selectHotelsForRankingWorkingSet(rawHotels, params, options);
+  const uniqueHotels = workingSet.hotels;
 
   if (uniqueHotels.length === 0) {
     return {
@@ -3237,6 +3580,8 @@ async function buildRankedHotelSection(api, db, rawHotels, params, options = {})
       selection_guide: {},
       count: 0,
       total_matches: 0,
+      raw_total_matches: 0,
+      ranking_working_set: workingSet,
       next_offset: null,
       results: [],
       ranked: [],
@@ -3305,12 +3650,18 @@ async function buildRankedHotelSection(api, db, rawHotels, params, options = {})
           (topResult
             ? ` ${compactText(firstNonEmpty(topResult?.bitvoya_value_brief?.primary_angle, topResult?.location_brief?.headline), 180) || ""}`
             : "")
+          +
+          (workingSet.working_set_limited
+            ? ` Large-city latency guard ranked a high-signal live working set of ${workingSet.working_set_total} hotels out of ${workingSet.raw_total}.`
+            : "")
         : "No ranked hotel results were produced.",
     applied_preferences: rankedSearch.applied_preferences,
     comparison_method: rankedSearch.comparison_method,
     selection_guide: rankedSearch.selection_guide,
     count: results.length,
     total_matches: totalMatches,
+    raw_total_matches: workingSet.raw_total,
+    ranking_working_set: workingSet,
     next_offset: offset + results.length < totalMatches ? offset + results.length : null,
     results,
     ranked: rankedSearch.ranked,
@@ -4050,10 +4401,11 @@ export async function searchHotels(api, db, params) {
       );
     }
   } else if (source === "city_name") {
-    const [rawCityCandidates, suggest] = await Promise.all([
-      api.searchCitiesOnly(cityName).catch(() => []),
-      api.searchSuggest(cityName).catch(() => ({ cities: [], hotels: [] })),
-    ]);
+    const rawCityCandidates = await api.searchCitiesOnly(cityName).catch(() => []);
+    const suggest =
+      asArray(rawCityCandidates).length > 0
+        ? { cities: [], hotels: [] }
+        : await api.searchSuggest(cityName).catch(() => ({ cities: [], hotels: [] }));
     const mergedCityCandidates = mergeCityCandidateSeeds(rawCityCandidates, suggest.cities);
     cityCandidates = await buildCityCandidateRows(db, mergedCityCandidates, cityName, candidateLimit);
     resolvedCity = normalizeResolvedCityCandidate(selectBestCityCandidate(mergedCityCandidates, cityName));
@@ -5527,6 +5879,7 @@ export async function getHotelRooms(api, db, params, options = {}) {
     selection_hints: [
       "Start with hotel.benefit_brief, hotel.location_brief, hotel.nearby_pois_brief, and hotel.bitvoya_value_brief before collapsing the answer into pure rate math.",
       "Choose room_id from rooms[].room_id and rate_id from rooms[].rates[].rate_id.",
+      "Do not call create_booking_intent directly from hotel selection or any search-context token. Run prepare_booking_quote first and then use the returned prepared_quote_id.",
       "Do not infer final payable totals from search-stage prices once live rates are available.",
       "Use selection_guide when the agent needs a fast cheapest vs flexible vs benefits-based recommendation.",
       "Pass priority_profile, payment_preference, require_free_cancellation, or prefer_benefits when the agent already knows traveler intent.",

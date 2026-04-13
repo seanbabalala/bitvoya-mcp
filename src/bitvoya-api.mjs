@@ -126,7 +126,7 @@ export function createBitvoyaApi(config) {
       return asArray(payload);
     },
 
-    async getHotelPrices({ hotelIds, checkin, checkout, adultNum }) {
+    async getHotelPrices({ hotelIds, checkin, checkout, adultNum }, options = {}) {
       const ids = asArray(hotelIds)
         .map((value) => String(value).trim())
         .filter(Boolean);
@@ -138,6 +138,7 @@ export function createBitvoyaApi(config) {
       const payload = unwrapEnvelope(
         await http.request("/hotels/prices", {
           method: "POST",
+          timeoutMs: options.timeoutMs,
           body: {
             hotel_ids: ids.join(","),
             checkin,

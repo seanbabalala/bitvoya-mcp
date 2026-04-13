@@ -124,7 +124,7 @@ export async function runBookingSmoke() {
     );
 
     const staleIntent = await createBookingIntent(store, {
-      quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
+      prepared_quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
       payment_method: "guarantee",
       guest_primary: {
         first_name: "Smoke",
@@ -137,15 +137,16 @@ export async function runBookingSmoke() {
     });
 
     const staleQuoteState = await getBookingState(store, {
-      quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
+      prepared_quote_id: "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0",
     });
 
     assert.equal(staleIntent.status, "partial");
-    assert.equal(staleIntent.data?.requested_quote?.quote_id_origin, "frontend_search_context_quote_id");
+    assert.equal(staleIntent.data?.requested_quote?.quote_id_origin, "frontend_search_context_token");
+    assert.equal(staleIntent.data?.requested_quote?.prepared_quote_id, "quote_bWVsYm91cm5lLTQ1NjU3OC1sYW5naGFtLW1lbGJvdXJuZQ_1_2026-04-14_2026-04-17_2_0");
     assert.equal(staleIntent.data?.recovered_search_context?.hotel_name, "Langham Melbourne");
     assert.equal(staleIntent.data?.recovered_search_context?.city_name, "Melbourne");
     assert.equal(staleQuoteState.status, "partial");
-    assert.equal(staleQuoteState.data?.requested_quote?.quote_id_origin, "frontend_search_context_quote_id");
+    assert.equal(staleQuoteState.data?.requested_quote?.quote_id_origin, "frontend_search_context_token");
     assert.equal(staleQuoteState.data?.recovered_search_context?.checkin, "2026-04-14");
     assert.equal(staleQuoteState.data?.recovered_search_context?.checkout, "2026-04-17");
 
@@ -190,7 +191,7 @@ export async function runBookingSmoke() {
     });
 
     const intent = await createBookingIntent(store, {
-      quote_id: quote.data?.quote?.quote_id,
+      prepared_quote_id: quote.data?.prepared_quote_id,
       payment_method: "guarantee",
       guest_primary: {
         first_name: "Smoke",
@@ -210,7 +211,7 @@ export async function runBookingSmoke() {
     });
 
     const quoteState = await getBookingState(store, {
-      quote_id: quote.data?.quote?.quote_id,
+      prepared_quote_id: quote.data?.prepared_quote_id,
     });
     const intentState = await getBookingState(store, {
       intent_id: intent.data?.intent?.intent_id,
@@ -242,6 +243,7 @@ export async function runBookingSmoke() {
     }
 
     assert.equal(quote.status, "ok");
+    assert.equal(quote.data?.prepared_quote_id, quote.data?.quote?.quote_id);
     assert.equal(intent.status, "ok");
     assert.equal(cardAttached.status, "ok");
     assert.equal(quoteState.status, "ok");

@@ -43,6 +43,60 @@ function asNonEmptyString(value) {
   return normalized ? normalized : null;
 }
 
+function normalizePreferredLanguage(value) {
+  const normalized = asNonEmptyString(value)?.toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    ["zh-tw", "zh_tw", "zh-hk", "zh_hk", "zh-mo", "zh_mo", "tw", "hk"].includes(normalized)
+  ) {
+    return "zh-TW";
+  }
+
+  if (
+    ["zh", "zh-cn", "zh_cn", "cn", "chinese"].includes(normalized) ||
+    normalized.startsWith("zh")
+  ) {
+    return "zh-CN";
+  }
+
+  if (
+    ["ja", "ja-jp", "ja_jp", "jp", "japanese"].includes(normalized) ||
+    normalized.startsWith("ja")
+  ) {
+    return "ja";
+  }
+
+  if (
+    ["ko", "ko-kr", "ko_kr", "kr", "korean"].includes(normalized) ||
+    normalized.startsWith("ko")
+  ) {
+    return "ko";
+  }
+
+  return "en";
+}
+
+function buildSignedDisplayPreferences(intentSummary) {
+  const userInfo =
+    intentSummary?.user_info && typeof intentSummary.user_info === "object"
+      ? intentSummary.user_info
+      : {};
+
+  const preferredLanguage = normalizePreferredLanguage(
+    userInfo.preferred_language ??
+      userInfo.preferredLanguage ??
+      userInfo.lang ??
+      userInfo.language ??
+      userInfo.locale ??
+      null
+  );
+
+  return preferredLanguage ? { preferred_language: preferredLanguage } : {};
+}
+
 function buildSignedUserBinding(intentSummary) {
   const userInfo =
     intentSummary?.user_info && typeof intentSummary.user_info === "object"
@@ -314,6 +368,7 @@ export function buildIntentSecureHandoff(intentSummary, options = {}) {
             requires_card_attachment: Boolean(intentSummary?.requires_card_attachment),
             intent_status: intentSummary?.status || null,
             ...buildSignedUserBinding(intentSummary),
+            ...buildSignedDisplayPreferences(intentSummary),
           },
           options?.config?.handoff
         );

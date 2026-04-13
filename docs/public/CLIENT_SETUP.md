@@ -97,6 +97,16 @@ If your client supports remote MCP servers, you usually only need:
 
 If your client supports session or timeout tuning, the default Bitvoya setup works well without custom values.
 
+## Recommended Model Selection
+
+If your client also lets you choose which LLM drives the MCP session, prefer a higher-capability model with strong tool-use behavior.
+
+Recommended direction:
+
+- use models such as `Claude 4.6` and `GPT-5.4`, or comparable flagship models
+- these models usually follow Bitvoya tool calls and multi-step booking workflows more accurately
+- smaller models may still work, but they are more likely to answer from general knowledge instead of calling tools, or to lose the correct quote -> intent -> handoff -> state sequence
+
 ## First Test Prompts
 
 After connecting, test with prompts that clearly require hotel search and comparison.

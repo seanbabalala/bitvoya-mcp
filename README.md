@@ -59,6 +59,14 @@ Most MCP clients add that automatically.
 
 Cherry Studio users should not assume the generic example above is directly importable. Use the Cherry Studio-specific setup in [docs/public/CLIENT_SETUP.md](docs/public/CLIENT_SETUP.md), especially the wrapped JSON import format plus manual `Authorization` header entry.
 
+## Recommended Models
+
+If your MCP client lets you choose the driving model, Bitvoya recommends higher-capability models with strong tool-use behavior.
+
+- prefer models such as `Claude 4.6` and `GPT-5.4`, or comparable flagship reasoning models
+- these models tend to follow tool calls, multi-step quote and intent flows, and state polling more reliably
+- smaller or cheaper models may still connect, but they are more likely to skip tools, over-answer from prior knowledge, or mishandle booking-step sequencing
+
 ## What Agents Can Do
 
 Bitvoya MCP is designed for agentic travel discovery and booking preparation.
@@ -132,6 +140,17 @@ Benefit availability depends on hotel, rate, market, and stay dates. Agents shou
 - frequently asked questions: [docs/public/FAQ.md](docs/public/FAQ.md)
 - security and access model: [docs/public/SECURITY_MODEL.md](docs/public/SECURITY_MODEL.md)
 - secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](docs/public/SECURE_HANDOFF.md)
+
+## License
+
+This repository is licensed under `Apache-2.0`. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The open-source license covers this repository's code and docs. It does not grant access to:
+
+- Bitvoya hosted production infrastructure
+- live hotel inventory and partner data feeds
+- Bitvoya-issued agent keys or user accounts
+- Bitvoya trademarks, brand assets, or service access outside normal product terms
 
 ## Important Notes
 
