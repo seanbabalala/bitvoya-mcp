@@ -35,6 +35,20 @@ function intValue(fileEnv, key, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function boolValue(fileEnv, key, fallback) {
+  const raw = envValue(fileEnv, key, String(fallback)).trim().toLowerCase();
+
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
+}
+
 function csvValue(fileEnv, key) {
   const raw = envValue(fileEnv, key, "");
   return raw
@@ -85,6 +99,14 @@ export function loadConfig() {
       port: intValue(fileEnv, "BITVOYA_MCP_HTTP_PORT", 3011),
       path: envValue(fileEnv, "BITVOYA_MCP_HTTP_PATH", "/mcp"),
       healthPath: envValue(fileEnv, "BITVOYA_MCP_HTTP_HEALTH_PATH", "/healthz"),
+      publicBaseUrl: envValue(fileEnv, "BITVOYA_MCP_PUBLIC_BASE_URL", ""),
+      allowedHosts: csvValue(fileEnv, "BITVOYA_MCP_ALLOWED_HOSTS"),
+      allowedOrigins: csvValue(fileEnv, "BITVOYA_MCP_ALLOWED_ORIGINS"),
+      enableDnsRebindingProtection: boolValue(
+        fileEnv,
+        "BITVOYA_MCP_ENABLE_DNS_REBINDING_PROTECTION",
+        true
+      ),
     },
     db: primaryDb,
     authDb,
