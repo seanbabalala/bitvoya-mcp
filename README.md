@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/public/assets/bitvoya-mcp-banner.svg" alt="Bitvoya MCP" width="100%" />
+  <img src="docs/public/assets/bitvoya-mcp-banner.png" alt="Bitvoya MCP" width="100%" />
 </p>
 
 <p align="center">
