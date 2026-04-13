@@ -108,6 +108,8 @@ Bitvoya works best when the driving model is strong at tool selection, stateful 
 - prefer `Claude 4.6`, `GPT-5.4`, or comparable flagship reasoning models
 - these models follow quote, intent, and state-polling steps more reliably
 - smaller models can connect, but they are more likely to skip tools or blur pricing semantics
+- for weaker automatic tool choosers, the safest generic first-call entry tool is `start_travel_planning`
+- if the request is already clearly a live hotel search, `start_hotel_search` remains the hotel-specific fast path
 
 ## Supported Client Setups
 
@@ -128,8 +130,10 @@ Bitvoya MCP is designed for discovery, comparison, quote preparation, and secure
 
 | Workflow | Primary tools |
 | --- | --- |
-| City and hotel discovery | `search_hotels`, `compare_hotels` |
+| Generic first-step routing | `start_travel_planning` |
+| City and hotel discovery | `start_hotel_search`, `search_hotels`, `compare_hotels` |
 | Hotel detail and room/rate exploration | `get_hotel_detail`, `get_hotel_rooms`, `compare_rates` |
+| High-level booking start | `create_booking` |
 | Quote preparation | `prepare_booking_quote` |
 | Booking intent creation | `create_booking_intent` |
 | Order and handoff state polling | `get_booking_state` |

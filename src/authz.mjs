@@ -93,6 +93,23 @@ const INTERNAL_EXECUTOR_ACTOR_TYPES = [
 ];
 
 const TOOL_AUTHORIZATION_POLICIES = {
+  start_travel_planning: {
+    required_scopes: [MCP_SCOPE.INVENTORY_READ, MCP_SCOPE.GROUNDING_READ],
+    exposure: "public",
+  },
+  start_hotel_search: {
+    required_scopes: [MCP_SCOPE.INVENTORY_READ, MCP_SCOPE.GROUNDING_READ],
+    exposure: "public",
+  },
+  create_booking: {
+    required_scopes: [
+      MCP_SCOPE.INVENTORY_READ,
+      MCP_SCOPE.GROUNDING_READ,
+      MCP_SCOPE.QUOTE_WRITE,
+      MCP_SCOPE.INTENT_WRITE,
+    ],
+    exposure: "public",
+  },
   search_cities: {
     required_scopes: [MCP_SCOPE.GROUNDING_READ],
     exposure: "public",

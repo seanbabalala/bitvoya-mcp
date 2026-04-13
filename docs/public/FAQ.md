@@ -85,6 +85,12 @@ That is not about raw prose quality alone. In practice, stronger models are more
 
 Smaller models may still be usable, but they are more likely to skip tool calls or confuse quote, intent, and state steps.
 
+If your client uses generic automatic tool choice and struggles to start the workflow, the safest generic first-call entry tool is `start_travel_planning`.
+
+If the user request is already clearly a live hotel-search request, `start_hotel_search` remains the hotel-specific fast path.
+
+If the traveler has already chosen a hotel_id, room_id, rate_id, and stay dates, the shortest public booking path is `create_booking` rather than manually chaining `prepare_booking_quote` and `create_booking_intent`.
+
 ## Does the agent key give direct database access?
 
 No.

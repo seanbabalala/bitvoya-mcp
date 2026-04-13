@@ -153,7 +153,17 @@ export function buildToolTextResult(payload) {
     ? payload.decision_support.recommended_next_tools
     : [];
   if (nextTools.length > 0) {
-    lines.push(`Next tools: ${nextTools.map((item) => item.tool).join(", ")}`);
+    lines.push("Recommended next tools:");
+    lines.push(
+      ...nextTools.map((item) => {
+        const requiredInputs = Array.isArray(item?.required_inputs)
+          ? item.required_inputs.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        const inputsText =
+          requiredInputs.length > 0 ? ` Inputs: ${requiredInputs.join(", ")}.` : "";
+        return `- ${item.tool}: ${String(item?.reason || "").trim()}${inputsText}`;
+      })
+    );
   }
 
   const warnings = Array.isArray(payload?.decision_support?.warnings)
@@ -161,6 +171,14 @@ export function buildToolTextResult(payload) {
     : [];
   if (warnings.length > 0) {
     lines.push(`Warnings: ${warnings.join(" | ")}`);
+  }
+
+  const selectionHints = Array.isArray(payload?.decision_support?.selection_hints)
+    ? payload.decision_support.selection_hints.map((hint) => String(hint || "").trim()).filter(Boolean)
+    : [];
+  if (selectionHints.length > 0) {
+    lines.push("Routing hints:");
+    lines.push(...selectionHints.map((hint) => `- ${hint}`));
   }
 
   const prefix = lines.length > 0 ? `${lines.join("\n")}\n\n` : "";

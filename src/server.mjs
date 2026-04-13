@@ -112,6 +112,43 @@ const rateComparisonPriorityProfileSchema = z.enum([
 ]);
 
 const paymentPreferenceSchema = z.enum(["any", "prepay", "guarantee"]);
+const paymentMethodSchema = z.enum(["prepay", "guarantee"]);
+const guestPrimaryInputSchema = z.object({
+  first_name: z.string().min(1),
+  last_name: z.string().min(1),
+  gender: z.string().optional(),
+  frequent_traveler: z.string().optional(),
+  membership_level: z.string().optional(),
+});
+const contactInputSchema = z.object({
+  email: z.string().min(1),
+  phone: z.string().min(1),
+  country_code: z.string().optional(),
+  custom_country_code: z.string().optional(),
+  full_phone: z.string().optional(),
+});
+const companionsInputSchema = z
+  .array(
+    z.object({
+      first_name: z.string().min(1),
+      last_name: z.string().min(1),
+      gender: z.string().optional(),
+    })
+  )
+  .optional();
+const childrenInputSchema = z
+  .array(
+    z.object({
+      age: z.number().int().min(0).max(17),
+    })
+  )
+  .optional();
+const userInfoInputSchema = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .describe(
+    "Optional user snapshot for later legacy-submit bridging. You may also pass user_info.preferred_language or user_info.lang so Bitvoya secure checkout follows the traveler language. Supported display languages are English, Chinese, Japanese, and Korean; other languages fall back to English."
+  );
 
 function buildRequestAuditContext(extra) {
   const headers = extra?.requestInfo?.headers || {};
@@ -334,6 +371,810 @@ function createMcpServerInstance() {
 }
 
 function registerServerTools(server) {
+async function runHotelSearchTool(params) {
+  const {
+    query,
+    city_id,
+    city_name,
+    checkin,
+    checkout,
+    adult_num,
+    offset,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  } = params;
+
+  if (!query && !city_id && !city_name) {
+    throw new Error("One of query, city_id, or city_name is required.");
+  }
+
+  const resolvedLimit = clampLimit(limit, config.limits.defaultSearch, config.limits.maxSearch);
+  const resolvedOffset = clampInteger(offset, 0, 0, 200);
+  const payload = await searchHotels(api, db, {
+    query,
+    city_id,
+    city_name,
+    checkin,
+    checkout,
+    adult_num: adult_num || 2,
+    offset: resolvedOffset,
+    limit: resolvedLimit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  });
+
+  return asTextResult(payload);
+}
+
+function normalizeEntryQueryText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function containsAnyRouteHint(text, hints) {
+  return hints.some((hint) => text.includes(hint));
+}
+
+function inferEntryIntent({ query, checkin, checkout, intent_hint }) {
+  const normalizedHint = String(intent_hint || "auto").trim();
+  if (normalizedHint && normalizedHint !== "auto") {
+    return normalizedHint;
+  }
+
+  const text = normalizeEntryQueryText(query);
+  if (!text) {
+    return "hotel_search";
+  }
+
+  const dateLikeHints = [
+    "today",
+    "tomorrow",
+    "tonight",
+    "this weekend",
+    "next weekend",
+    "next week",
+    "today's",
+    "今天",
+    "明天",
+    "今晚",
+    "周末",
+    "下周",
+  ];
+  const hotelSearchHints = [
+    "hotel",
+    "hotels",
+    "resort",
+    "room",
+    "rooms",
+    "rate",
+    "rates",
+    "price",
+    "pricing",
+    "availability",
+    "available",
+    "book",
+    "booking",
+    "stay",
+    "compare hotels",
+    "酒店",
+    "房型",
+    "房价",
+    "价格",
+    "可订",
+    "预订",
+    "入住",
+    "离店",
+    "比价",
+  ];
+  const destinationGroundingHints = [
+    "where to stay",
+    "best area",
+    "best areas",
+    "best neighborhood",
+    "best neighbourhood",
+    "district",
+    "districts",
+    "neighborhood",
+    "neighbourhood",
+    "area",
+    "areas",
+    "walkable",
+    "walkability",
+    "transport",
+    "landmark",
+    "landmarks",
+    "safety",
+    "itinerary",
+    "guide",
+    "vibe",
+    "vibes",
+    "grounding",
+    "哪里住",
+    "住哪里",
+    "区域",
+    "片区",
+    "街区",
+    "地段",
+    "交通",
+    "景点",
+    "周边",
+    "攻略",
+    "氛围",
+    "适合住",
+    "适合家庭",
+    "适合情侣",
+  ];
+  const hotelGroundingHints = [
+    "this hotel",
+    "that hotel",
+    "the hotel",
+    "this property",
+    "that property",
+    "worth it",
+    "hotel fit",
+    "why stay",
+    "property fit",
+    "酒店怎么样",
+    "这家酒店",
+    "这个酒店",
+    "值不值得",
+    "适合谁",
+    "位置如何",
+  ];
+
+  if (checkin || checkout || containsAnyRouteHint(text, dateLikeHints)) {
+    return "hotel_search";
+  }
+
+  const wantsHotelSearch = containsAnyRouteHint(text, hotelSearchHints);
+  const wantsDestinationGrounding = containsAnyRouteHint(text, destinationGroundingHints);
+  const wantsHotelGrounding = containsAnyRouteHint(text, hotelGroundingHints);
+
+  if (wantsDestinationGrounding && !wantsHotelSearch) {
+    return "destination_grounding";
+  }
+
+  if (wantsHotelGrounding && !wantsHotelSearch) {
+    return "hotel_grounding";
+  }
+
+  return "auto";
+}
+
+function inferEntryIntentFromSuggestions(initialIntent, suggestionPayload, options = {}) {
+  if (initialIntent !== "auto") {
+    return initialIntent;
+  }
+
+  if (options.checkin || options.checkout) {
+    return "hotel_search";
+  }
+
+  const cityCount = Number(suggestionPayload?.data?.count?.cities || 0);
+  const hotelCount = Number(suggestionPayload?.data?.count?.hotels || 0);
+
+  if (cityCount > 0 && hotelCount === 0) {
+    return "destination_grounding";
+  }
+
+  if (hotelCount > 0 && cityCount === 0) {
+    return "hotel_grounding";
+  }
+
+  return "hotel_search";
+}
+
+function withEntryRouting(payload, entryTool, routedTool, reason) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const existingDecisionSupport =
+    payload.decision_support && typeof payload.decision_support === "object"
+      ? payload.decision_support
+      : {};
+  const selectionHints = Array.isArray(existingDecisionSupport.selection_hints)
+    ? existingDecisionSupport.selection_hints
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+
+  const routingHint = `Entry router ${entryTool} selected ${routedTool} because ${reason}.`;
+  if (!selectionHints.includes(routingHint)) {
+    selectionHints.unshift(routingHint);
+  }
+
+  return {
+    ...payload,
+    decision_support: {
+      ...existingDecisionSupport,
+      selection_hints: selectionHints,
+    },
+    data:
+      payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+        ? {
+            entry_routing: {
+              entry_tool: entryTool,
+              routed_tool: routedTool,
+              reason,
+            },
+            ...payload.data,
+          }
+        : {
+            entry_routing: {
+              entry_tool: entryTool,
+              routed_tool: routedTool,
+              reason,
+            },
+            routed_payload: payload.data ?? null,
+          },
+  };
+}
+
+function pickPresent(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+
+    if (typeof value === "string" && !value.trim()) {
+      continue;
+    }
+
+    return value;
+  }
+
+  return undefined;
+}
+
+function asPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeOptionalText(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const text = String(value).trim();
+  return text ? text : undefined;
+}
+
+function normalizeOptionalNumber(value) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "number") {
+    return value;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : value;
+}
+
+function normalizeOptionalBoolean(value) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (value === "true") {
+    return true;
+  }
+
+  if (value === "false") {
+    return false;
+  }
+
+  return value;
+}
+
+function normalizeStringList(value) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  const items = Array.isArray(value) ? value : [value];
+  const normalized = items.map((item) => String(item || "").trim()).filter(Boolean);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeGuestPrimaryInput(source = {}, fallbacks = {}) {
+  const primary = asPlainObject(source);
+  const fallback = asPlainObject(fallbacks);
+
+  return {
+    first_name: normalizeOptionalText(
+      pickPresent(
+        primary.first_name,
+        primary.firstName,
+        fallback.first_name,
+        fallback.firstName,
+        fallback.first_name,
+        fallback.firstName
+      )
+    ),
+    last_name: normalizeOptionalText(
+      pickPresent(
+        primary.last_name,
+        primary.lastName,
+        fallback.last_name,
+        fallback.lastName
+      )
+    ),
+    gender: normalizeOptionalText(pickPresent(primary.gender, fallback.gender)),
+    frequent_traveler: normalizeOptionalText(
+      pickPresent(primary.frequent_traveler, primary.frequentTraveler, fallback.frequent_traveler, fallback.frequentTraveler)
+    ),
+    membership_level: normalizeOptionalText(
+      pickPresent(primary.membership_level, primary.membershipLevel, fallback.membership_level, fallback.membershipLevel)
+    ),
+  };
+}
+
+function normalizeContactInput(source = {}, fallbacks = {}) {
+  const contact = asPlainObject(source);
+  const fallback = asPlainObject(fallbacks);
+
+  return {
+    email: normalizeOptionalText(pickPresent(contact.email, fallback.email)),
+    phone: normalizeOptionalText(
+      pickPresent(contact.phone, contact.phoneNumber, contact.mobile, fallback.phone, fallback.phoneNumber, fallback.mobile)
+    ),
+    country_code: normalizeOptionalText(
+      pickPresent(contact.country_code, contact.countryCode, fallback.country_code, fallback.countryCode)
+    ),
+    custom_country_code: normalizeOptionalText(
+      pickPresent(contact.custom_country_code, contact.customCountryCode, fallback.custom_country_code, fallback.customCountryCode)
+    ),
+    full_phone: normalizeOptionalText(
+      pickPresent(contact.full_phone, contact.fullPhone, fallback.full_phone, fallback.fullPhone)
+    ),
+  };
+}
+
+function normalizeCompanionList(value) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.map((item) => {
+    const companion = asPlainObject(item);
+    return {
+      first_name: normalizeOptionalText(pickPresent(companion.first_name, companion.firstName)),
+      last_name: normalizeOptionalText(pickPresent(companion.last_name, companion.lastName)),
+      gender: normalizeOptionalText(companion.gender),
+    };
+  });
+}
+
+function normalizeChildrenList(value) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.map((item) => {
+    const child = asPlainObject(item);
+    return {
+      age: normalizeOptionalNumber(pickPresent(child.age, child.child_age, child.childAge)),
+    };
+  });
+}
+
+function normalizeHotelRoomLookupArgs(input = {}) {
+  const params = asPlainObject(input);
+
+  return {
+    hotel_id: normalizeOptionalText(pickPresent(params.hotel_id, params.hotelId)),
+    hotel_name: normalizeOptionalText(pickPresent(params.hotel_name, params.hotelName)),
+    city_name: normalizeOptionalText(pickPresent(params.city_name, params.cityName)),
+    checkin: normalizeOptionalText(params.checkin),
+    checkout: normalizeOptionalText(params.checkout),
+    adult_num: normalizeOptionalNumber(pickPresent(params.adult_num, params.adultNum)),
+    child_num: normalizeOptionalNumber(pickPresent(params.child_num, params.childNum)),
+    room_num: normalizeOptionalNumber(pickPresent(params.room_num, params.roomNum)),
+    room_limit: normalizeOptionalNumber(pickPresent(params.room_limit, params.roomLimit)),
+    rate_limit_per_room: normalizeOptionalNumber(
+      pickPresent(params.rate_limit_per_room, params.rateLimitPerRoom)
+    ),
+    priority_profile: normalizeOptionalText(
+      pickPresent(params.priority_profile, params.priorityProfile)
+    ),
+    payment_preference: normalizeOptionalText(
+      pickPresent(params.payment_preference, params.paymentPreference)
+    ),
+    require_free_cancellation: normalizeOptionalBoolean(
+      pickPresent(params.require_free_cancellation, params.requireFreeCancellation)
+    ),
+    prefer_benefits: normalizeOptionalBoolean(
+      pickPresent(params.prefer_benefits, params.preferBenefits)
+    ),
+  };
+}
+
+function normalizePrepareBookingQuoteArgs(input = {}) {
+  const params = asPlainObject(input);
+  const normalized = normalizeHotelRoomLookupArgs(params);
+
+  return {
+    ...normalized,
+    room_id: normalizeOptionalText(pickPresent(params.room_id, params.roomId)),
+    rate_id: normalizeOptionalText(pickPresent(params.rate_id, params.rateId)),
+  };
+}
+
+function normalizeCreateBookingIntentArgs(input = {}) {
+  const params = asPlainObject(input);
+  const bookingQuote = asPlainObject(pickPresent(params.booking_quote, params.bookingQuote));
+  const contactSource = asPlainObject(pickPresent(params.contact, params.contactInfo));
+  const fallbackContactSource = {
+    email: params.email,
+    phone: pickPresent(params.phone, params.phoneNumber, params.mobile),
+    country_code: pickPresent(params.country_code, params.countryCode),
+    custom_country_code: pickPresent(params.custom_country_code, params.customCountryCode),
+    full_phone: pickPresent(params.full_phone, params.fullPhone),
+    first_name: pickPresent(params.first_name, params.firstName),
+    last_name: pickPresent(params.last_name, params.lastName),
+  };
+  const guestPrimarySource = asPlainObject(
+    pickPresent(params.guest_primary, params.guestPrimary, params.guest)
+  );
+
+  return {
+    prepared_quote_id: normalizeOptionalText(
+      pickPresent(
+        params.prepared_quote_id,
+        params.preparedQuoteId,
+        bookingQuote.prepared_quote_id,
+        bookingQuote.preparedQuoteId
+      )
+    ),
+    quote_id: normalizeOptionalText(
+      pickPresent(params.quote_id, params.quoteId, bookingQuote.quote_id, bookingQuote.quoteId)
+    ),
+    payment_method: normalizeOptionalText(
+      pickPresent(
+        params.payment_method,
+        params.paymentMethod,
+        params.payment_path,
+        params.paymentPath
+      )
+    )?.toLowerCase(),
+    guest_primary: normalizeGuestPrimaryInput(guestPrimarySource, {
+      ...contactSource,
+      ...fallbackContactSource,
+    }),
+    contact: normalizeContactInput(contactSource, fallbackContactSource),
+    companions: normalizeCompanionList(params.companions),
+    children: normalizeChildrenList(params.children),
+    arrival_time: normalizeOptionalText(pickPresent(params.arrival_time, params.arrivalTime)),
+    special_requests: normalizeStringList(
+      pickPresent(params.special_requests, params.specialRequests)
+    ),
+    user_info: asPlainObject(pickPresent(params.user_info, params.userInfo)),
+  };
+}
+
+function normalizeCreateBookingArgs(input = {}) {
+  const params = asPlainObject(input);
+  const bookingQuote = asPlainObject(pickPresent(params.booking_quote, params.bookingQuote));
+
+  return {
+    ...normalizePrepareBookingQuoteArgs({
+      ...params,
+      room_id: pickPresent(params.room_id, params.roomId, bookingQuote.room_id, bookingQuote.roomId),
+      rate_id: pickPresent(params.rate_id, params.rateId, bookingQuote.rate_id, bookingQuote.rateId),
+    }),
+    ...normalizeCreateBookingIntentArgs({
+      ...params,
+      quote_id: pickPresent(params.quote_id, params.quoteId, bookingQuote.quote_id, bookingQuote.quoteId),
+      prepared_quote_id: pickPresent(
+        params.prepared_quote_id,
+        params.preparedQuoteId,
+        bookingQuote.prepared_quote_id,
+        bookingQuote.preparedQuoteId
+      ),
+    }),
+  };
+}
+
+function normalizeBookingStateArgs(input = {}) {
+  const params = asPlainObject(input);
+
+  return {
+    prepared_quote_id: normalizeOptionalText(
+      pickPresent(params.prepared_quote_id, params.preparedQuoteId)
+    ),
+    quote_id: normalizeOptionalText(pickPresent(params.quote_id, params.quoteId)),
+    intent_id: normalizeOptionalText(pickPresent(params.intent_id, params.intentId)),
+  };
+}
+
+function rewriteToolResult(payload, options = {}) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const decisionSupport =
+    payload.decision_support && typeof payload.decision_support === "object"
+      ? payload.decision_support
+      : {};
+  const selectionHints = Array.isArray(decisionSupport.selection_hints)
+    ? decisionSupport.selection_hints.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const addedHint = normalizeOptionalText(options.selection_hint);
+
+  if (addedHint && !selectionHints.includes(addedHint)) {
+    selectionHints.unshift(addedHint);
+  }
+
+  const dataPatch =
+    options.data_patch && typeof options.data_patch === "object" && !Array.isArray(options.data_patch)
+      ? options.data_patch
+      : null;
+  const existingData =
+    payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+      ? payload.data
+      : null;
+
+  return {
+    ...payload,
+    ...(options.tool ? { tool: options.tool } : {}),
+    ...(options.summary_prefix
+      ? { summary: `${options.summary_prefix}${payload.summary ? ` ${payload.summary}` : ""}`.trim() }
+      : {}),
+    decision_support: {
+      ...decisionSupport,
+      ...(selectionHints.length > 0 ? { selection_hints: selectionHints } : {}),
+    },
+    ...(dataPatch || existingData
+      ? {
+          data: {
+            ...(existingData || {}),
+            ...(dataPatch || {}),
+          },
+        }
+      : {}),
+  };
+}
+
+async function runTravelPlanningEntryTool(params) {
+  const {
+    query,
+    checkin,
+    checkout,
+    adult_num,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+    intent_hint,
+  } = params;
+
+  if (!query) {
+    throw new Error("query is required.");
+  }
+
+  const initialIntent = inferEntryIntent({ query, checkin, checkout, intent_hint });
+  const suggestionPayload =
+    initialIntent === "hotel_search" && (checkin || checkout)
+      ? null
+      : await searchDestinationSuggestions(api, db, {
+          query,
+          limit: clampInteger(limit, 5, 1, 10),
+        });
+  const resolvedIntent = inferEntryIntentFromSuggestions(initialIntent, suggestionPayload, {
+    checkin,
+    checkout,
+  });
+
+  if (resolvedIntent === "destination_grounding") {
+    const topCity =
+      suggestionPayload?.data?.cities?.find((item) => item?.city_id || item?.city_name) || null;
+
+    if (topCity) {
+      const payload = await getCityGrounding(
+        db,
+        {
+          source_city_id: topCity.city_id || undefined,
+          city_name: topCity.city_name || query,
+        },
+        clampInteger(limit, config.limits.defaultPoi, 1, 20)
+      );
+
+      if (payload) {
+        return asTextResult(
+          withEntryRouting(
+            payload,
+            "start_travel_planning",
+            "get_city_grounding",
+            "the query looks destination-first and live suggestions resolved a city candidate"
+          )
+        );
+      }
+    }
+
+    const payload = await searchCities(db, {
+      query,
+      limit: clampLimit(limit, config.limits.defaultSearch, config.limits.maxSearch),
+    });
+    return asTextResult(
+      withEntryRouting(
+        payload,
+        "start_travel_planning",
+        "search_cities",
+        "the query looks destination-first, so grounding search is a safer entry path than hotel inventory"
+      )
+    );
+  }
+
+  if (resolvedIntent === "hotel_grounding") {
+    const topHotel =
+      suggestionPayload?.data?.hotels?.find((item) => item?.hotel_id || item?.hotel_name) || null;
+
+    if (topHotel) {
+      const payload = await getHotelGrounding(
+        db,
+        {
+          source_hotel_id: topHotel.hotel_id || undefined,
+          hotel_name: topHotel.hotel_name || query,
+        },
+        clampInteger(limit, config.limits.defaultPoi, 1, 20)
+      );
+
+      if (payload) {
+        return asTextResult(
+          withEntryRouting(
+            payload,
+            "start_travel_planning",
+            "get_hotel_grounding",
+            "the query looks hotel-specific without a booking step, so hotel grounding is a better first move than room search"
+          )
+        );
+      }
+    }
+
+    const payload = await searchHotelsGrounding(db, {
+      query,
+      limit: clampLimit(limit, config.limits.defaultSearch, config.limits.maxSearch),
+    });
+    return asTextResult(
+      withEntryRouting(
+        payload,
+        "start_travel_planning",
+        "search_hotels_grounding",
+        "the query appears hotel-specific but identity is still fuzzy, so grounding search is safer than live inventory"
+      )
+    );
+  }
+
+  return runHotelSearchTool({
+    query,
+    checkin,
+    checkout,
+    adult_num,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  });
+}
+
+server.registerTool(
+  "start_travel_planning",
+  agenticReadTool({
+    description:
+      `Primary generic first-step tool for ambiguous user prompts across destination grounding, hotel grounding, and live hotel search. Use this when the user's first request is broad or unclear and you need Bitvoya to choose the right entry path before deeper tool calls. ${relativeDateInstruction}`,
+    inputSchema: {
+      query: z
+        .string()
+        .min(1)
+        .describe("Freeform user request or condensed travel intent. This may describe a destination, a hotel, or a broader where-to-stay question."),
+      intent_hint: z
+        .enum(["auto", "destination_grounding", "hotel_grounding", "hotel_search"])
+        .optional()
+        .describe("Optional routing hint. Leave as auto unless the user's request clearly belongs to one path."),
+      checkin: z.string().optional().describe(`Optional stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().optional().describe(`Optional stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for hotel-search pricing when live inventory is the likely route."),
+      limit: z.number().int().min(1).max(20).optional().describe("Maximum number of returned candidates or grounding rows."),
+      priority_profile: hotelComparisonPriorityProfileSchema
+        .optional()
+        .describe("How to rank hotel shortlists when live inventory search is selected."),
+      payment_preference: paymentPreferenceSchema
+        .optional()
+        .describe("Optional preferred payment path to bias shortlist ranking when live inventory search is selected."),
+      require_free_cancellation: z.boolean().optional().describe("Bias live shortlist logic toward flexible inventory when hotel search is selected."),
+      prefer_benefits: z.boolean().optional().describe("Bias live shortlist logic toward explicit member/perk payloads when hotel search is selected."),
+    },
+  }),
+  async ({
+    query,
+    intent_hint,
+    checkin,
+    checkout,
+    adult_num,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  }) =>
+    runTravelPlanningEntryTool({
+      query,
+      intent_hint,
+      checkin,
+      checkout,
+      adult_num,
+      limit,
+      priority_profile,
+      payment_preference,
+      require_free_cancellation,
+      prefer_benefits,
+    })
+);
+
+server.registerTool(
+  "start_hotel_search",
+  agenticReadTool({
+    description:
+      `Hotel-search-specific first-step tool for requests that already clearly want live hotel inventory, shortlist comparison, or rate discovery. If the user is still asking a broader where-to-stay or grounding question, prefer start_travel_planning instead. ${relativeDateInstruction}`,
+    inputSchema: {
+      query: z
+        .string()
+        .min(1)
+        .describe("Concise destination, hotel, brand, district, or travel keyword extracted from the user's request."),
+      checkin: z.string().optional().describe(`Optional stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      checkout: z.string().optional().describe(`Optional stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
+      adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults for pricing lookup."),
+      limit: z.number().int().min(1).max(20).optional().describe("Maximum number of hotels to return."),
+      priority_profile: hotelComparisonPriorityProfileSchema
+        .optional()
+        .describe("How to rank the returned shortlist: balanced, price, perks, luxury, location, flexibility, or low_due_now."),
+      payment_preference: paymentPreferenceSchema
+        .optional()
+        .describe("Optional preferred payment path to bias shortlist ranking."),
+      require_free_cancellation: z.boolean().optional().describe("Bias shortlist logic toward flexible inventory; must still be validated on live rates."),
+      prefer_benefits: z.boolean().optional().describe("Bias shortlist logic toward explicit member/perk payloads."),
+    },
+  }),
+  async ({
+    query,
+    checkin,
+    checkout,
+    adult_num,
+    limit,
+    priority_profile,
+    payment_preference,
+    require_free_cancellation,
+    prefer_benefits,
+  }) =>
+    runHotelSearchTool({
+      query,
+      checkin,
+      checkout,
+      adult_num,
+      limit,
+      priority_profile,
+      payment_preference,
+      require_free_cancellation,
+      prefer_benefits,
+    })
+);
+
 server.registerTool(
   "search_cities",
   agenticReadTool({
@@ -354,7 +1195,7 @@ server.registerTool(
   "search_destination_suggestions",
   agenticReadTool({
     description:
-      "Resolve a freeform destination or hotel query through Bitvoya's live suggest index, with optional grounding excerpts.",
+      "Fallback resolver for ambiguous destination or hotel wording through Bitvoya's live suggest index, with optional grounding excerpts. Do not use this as the main hotel discovery tool when start_hotel_search or search_hotels fits the request.",
     inputSchema: {
       query: z.string().min(1).describe("Destination or hotel keyword."),
       limit: z.number().int().min(1).max(20).optional().describe("Maximum cities and hotels to return per section."),
@@ -370,7 +1211,7 @@ server.registerTool(
 server.registerTool(
   "search_cities_live",
   agenticReadTool({
-    description: "Search Bitvoya's live city index for destination input UX and city-id resolution.",
+    description: "Use only for live city-id resolution and destination autocomplete. Not a general hotel discovery tool.",
     inputSchema: {
       keyword: z.string().min(1).describe("City keyword."),
       limit: z.number().int().min(1).max(20).optional().describe("Maximum number of cities to return."),
@@ -452,7 +1293,7 @@ server.registerTool(
   "search_hotels",
   agenticReadTool({
     description:
-      `API-first live hotel discovery for Bitvoya inventory. Search by city or keyword and optionally attach search-stage supplier min prices. ${relativeDateInstruction}`,
+      `Advanced live hotel discovery for Bitvoya inventory with direct city and pagination control. For most generic user hotel requests, prefer start_hotel_search first; use this tool when you already know the city, want direct city_id or city_name control, or are continuing an existing hotel-search workflow. ${relativeDateInstruction}`,
     inputSchema: {
       query: z.string().optional().describe("Hotel or destination keyword."),
       city_id: z.string().optional().describe("Known Bitvoya city id."),
@@ -485,14 +1326,8 @@ server.registerTool(
     payment_preference,
     require_free_cancellation,
     prefer_benefits,
-  }) => {
-    if (!query && !city_id && !city_name) {
-      throw new Error("One of query, city_id, or city_name is required.");
-    }
-
-    const resolvedLimit = clampLimit(limit, config.limits.defaultSearch, config.limits.maxSearch);
-    const resolvedOffset = clampInteger(offset, 0, 0, 200);
-    const payload = await searchHotels(api, db, {
+  }) =>
+    runHotelSearchTool({
       query,
       city_id,
       city_name,
@@ -505,16 +1340,14 @@ server.registerTool(
       payment_preference,
       require_free_cancellation,
       prefer_benefits,
-    });
-    return asTextResult(payload);
-  }
+    })
 );
 
 server.registerTool(
   "get_hotel_detail",
   agenticReadTool({
     description:
-      "Fetch Bitvoya hotel detail from the existing API and augment it with tripwiki grounding excerpts. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id.",
+      "Fetch live Bitvoya hotel detail plus grounding excerpts after a hotel candidate has already been selected. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id.",
     inputSchema: {
       hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
       hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery when hotel_id may be non-canonical."),
@@ -531,7 +1364,7 @@ server.registerTool(
   "get_hotel_profile",
   agenticReadTool({
     description:
-      "Fetch Bitvoya's rich static God Profile for a hotel and pair it with the normalized hotel detail payload. If hotel_id may be non-canonical, also pass hotel_name and optional city_name for recovery.",
+      "Fetch Bitvoya's rich static God Profile for a hotel after a specific hotel candidate is already in focus. This is not a primary discovery tool. If hotel_id may be non-canonical, also pass hotel_name and optional city_name for recovery.",
     inputSchema: {
       hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
       hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery."),
@@ -548,28 +1381,31 @@ server.registerTool(
   "get_hotel_rooms",
   agenticReadTool({
     description:
-      `Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id. ${relativeDateInstruction}`,
-    inputSchema: {
-      hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
-      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery when hotel_id may be non-canonical."),
-      city_name: z.string().min(1).optional().describe("Optional city hint to disambiguate hotel-name recovery."),
-      checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
-      checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
-      adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
-      child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
-      room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
-      room_limit: z.number().int().min(1).max(20).optional().describe("Maximum room entries to return."),
-      rate_limit_per_room:
-        z.number().int().min(1).max(20).optional().describe("Maximum rates to keep per room."),
-      priority_profile: rateComparisonPriorityProfileSchema
-        .optional()
-        .describe("Optional preference profile to produce a primary in-tool rate recommendation."),
-      payment_preference: paymentPreferenceSchema
-        .optional()
-        .describe("Optional preferred payment path to bias the in-tool recommendation."),
-      require_free_cancellation: z.boolean().optional().describe("Prefer free-cancel rates in the in-tool recommendation."),
-      prefer_benefits: z.boolean().optional().describe("Bias the in-tool recommendation toward rates with explicit benefits."),
-    },
+      `Primary next-step tool after a hotel has been chosen. Fetch live room and rate inventory with explicit supplier total, service fee, display total, and payment-option semantics. Do not use before a specific hotel candidate is selected. If hotel_id may come from a frontend page or foreign system, also pass hotel_name and optional city_name so MCP can recover the canonical live-inventory hotel id. ${relativeDateInstruction}`,
+    inputSchema: z.preprocess(
+      (input) => normalizeHotelRoomLookupArgs(input),
+      z.object({
+        hotel_id: z.string().min(1).describe("Canonical Bitvoya hotel id when known. May be a non-canonical external id when recovery hints are also provided."),
+        hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery when hotel_id may be non-canonical."),
+        city_name: z.string().min(1).optional().describe("Optional city hint to disambiguate hotel-name recovery."),
+        checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+        checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
+        adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
+        child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
+        room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
+        room_limit: z.number().int().min(1).max(20).optional().describe("Maximum room entries to return."),
+        rate_limit_per_room:
+          z.number().int().min(1).max(20).optional().describe("Maximum rates to keep per room."),
+        priority_profile: rateComparisonPriorityProfileSchema
+          .optional()
+          .describe("Optional preference profile to produce a primary in-tool rate recommendation."),
+        payment_preference: paymentPreferenceSchema
+          .optional()
+          .describe("Optional preferred payment path to bias the in-tool recommendation."),
+        require_free_cancellation: z.boolean().optional().describe("Prefer free-cancel rates in the in-tool recommendation."),
+        prefer_benefits: z.boolean().optional().describe("Bias the in-tool recommendation toward rates with explicit benefits."),
+      })
+    ),
   }),
   async ({
     hotel_id,
@@ -625,7 +1461,7 @@ server.registerTool(
   "compare_hotels",
   agenticReadTool({
     description:
-      `Compare multiple hotels with agent-oriented strengths, tradeoffs, benefit signals, and optional live stay-price snapshots. ${relativeDateInstruction}`,
+      `Compare multiple already-selected hotels with agent-oriented strengths, tradeoffs, benefit signals, and optional live stay-price snapshots. Use this after start_hotel_search or search_hotels has produced hotel_ids. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_ids: z
         .array(z.string().min(1))
@@ -682,7 +1518,7 @@ server.registerTool(
   "compare_rates",
   agenticReadTool({
     description:
-      `Compare room/rate options inside one hotel and surface cheapest, most flexible, best-benefits, best-guarantee, and best-prepay picks. ${relativeDateInstruction}`,
+      `Compare room/rate options inside one already-selected hotel and surface cheapest, most flexible, best-benefits, best-guarantee, and best-prepay picks. Use this after get_hotel_rooms or when exact hotel and stay context is already fixed. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
       checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
@@ -750,27 +1586,224 @@ server.registerTool(
 );
 
 server.registerTool(
-  "prepare_booking_quote",
+  "create_booking",
   {
     description:
-      `Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection. This is the only public MCP tool that mints a booking quote usable by create_booking_intent. ${relativeDateInstruction}`,
+      "High-level public booking starter. Prefer this over prepare_booking_quote plus create_booking_intent when you already know the selected hotel_id, room_id, rate_id, stay dates, guest, and contact. It will mint a fresh quote when needed, create the booking intent, and return Bitvoya secure handoff state without collecting sensitive card data inside chat.",
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
-    inputSchema: {
-      hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
-      hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for recovering canonical live hotel id."),
-      city_name: z.string().min(1).optional().describe("Optional city name hint paired with hotel_name for identity recovery."),
-      room_id: z.string().min(1).describe("Selected room id."),
-      rate_id: z.string().min(1).describe("Selected rate id from get_hotel_rooms."),
-      checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
-      checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
-      adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
-      child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
-      room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
+    inputSchema: z.preprocess(
+      (input) => normalizeCreateBookingArgs(input),
+      z
+        .object({
+          prepared_quote_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Optional fresh prepared quote id from prepare_booking_quote. If absent or stale, create_booking can mint a new quote when full hotel_id + room_id + rate_id + stay context is supplied."),
+          quote_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Deprecated alias for prepared_quote_id."),
+          hotel_id: z.string().min(1).optional().describe("Bitvoya hotel id for automatic quote refresh when needed."),
+          hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for canonical hotel-id recovery during automatic quote refresh."),
+          city_name: z.string().min(1).optional().describe("Optional city hint paired with hotel_name for identity recovery."),
+          room_id: z.string().min(1).optional().describe("Selected room id for automatic quote refresh when needed."),
+          rate_id: z.string().min(1).optional().describe("Selected rate id for automatic quote refresh when needed."),
+          checkin: z.string().min(1).optional().describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+          checkout: z.string().min(1).optional().describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
+          adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
+          child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
+          room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
+          payment_method: paymentMethodSchema.describe("Selected payment path."),
+          guest_primary: guestPrimaryInputSchema,
+          contact: contactInputSchema,
+          companions: companionsInputSchema,
+          children: childrenInputSchema,
+          arrival_time: z.string().optional(),
+          special_requests: z.array(z.string().min(1)).optional(),
+          user_info: userInfoInputSchema,
+        })
+        .superRefine((value, ctx) => {
+          const hasQuote = Boolean(value.prepared_quote_id || value.quote_id);
+          const hasSelection = Boolean(
+            value.hotel_id && value.room_id && value.rate_id && value.checkin && value.checkout
+          );
+
+          if (!hasQuote && !hasSelection) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["prepared_quote_id"],
+              message:
+                "Provide prepared_quote_id or quote_id, or provide hotel_id + room_id + rate_id + checkin + checkout so create_booking can mint a fresh quote automatically.",
+            });
+          }
+        })
+    ),
+  },
+  async (args, extra) => {
+    const requestPrincipal = extra?.bitvoyaAuth?.principal || null;
+    const toolOptions = {
+      execution_mode: bookingExecutionMode,
+      config,
+      request_principal: requestPrincipal,
+    };
+
+    const providedQuoteId = args.prepared_quote_id || args.quote_id || null;
+    const providedQuote = providedQuoteId ? store.getQuote(providedQuoteId) : null;
+    const hasUsableQuote = Boolean(providedQuote && providedQuote.expires_at_ms > Date.now());
+    const hasSelection = Boolean(
+      args.hotel_id && args.room_id && args.rate_id && args.checkin && args.checkout
+    );
+
+    let effectivePreparedQuoteId = hasUsableQuote ? providedQuote.quote_id : null;
+    let quoteSource = hasUsableQuote ? "existing_prepared_quote" : "fresh_quote_required";
+
+    if (!effectivePreparedQuoteId) {
+      if (!hasSelection) {
+        const payload = await createBookingIntent(
+          store,
+          {
+            prepared_quote_id: providedQuoteId || undefined,
+            quote_id: providedQuoteId || undefined,
+            payment_method: args.payment_method,
+            guest_primary: args.guest_primary,
+            contact: args.contact,
+            companions: args.companions,
+            children: args.children,
+            arrival_time: args.arrival_time,
+            special_requests: args.special_requests,
+            user_info: args.user_info,
+          },
+          toolOptions
+        );
+
+        return asTextResult(
+          rewriteToolResult(payload, {
+            tool: "create_booking",
+            selection_hint:
+              "create_booking could not auto-refresh the quote because hotel_id, room_id, rate_id, checkin, and checkout were not all supplied.",
+            data_patch: {
+              create_booking_flow: {
+                quote_source: "missing_or_stale_quote_without_selection",
+                provided_quote_id: providedQuoteId,
+                prepared_quote_id: null,
+                auto_prepared_quote: false,
+              },
+            },
+          })
+        );
+      }
+
+      const quotePayload = await prepareBookingQuote(
+        api,
+        db,
+        store,
+        config,
+        {
+          hotel_id: args.hotel_id,
+          hotel_name: args.hotel_name || null,
+          city_name: args.city_name || null,
+          room_id: args.room_id,
+          rate_id: args.rate_id,
+          checkin: args.checkin,
+          checkout: args.checkout,
+          adult_num: args.adult_num || 2,
+          child_num: args.child_num || 0,
+          room_num: args.room_num || 1,
+        },
+        toolOptions
+      );
+
+      effectivePreparedQuoteId =
+        quotePayload?.data?.prepared_quote_id || quotePayload?.data?.quote?.quote_id || null;
+
+      if (!effectivePreparedQuoteId) {
+        return asTextResult(
+          rewriteToolResult(quotePayload, {
+            tool: "create_booking",
+            selection_hint:
+              "create_booking stopped before intent creation because a fresh live quote could not be prepared.",
+            data_patch: {
+              create_booking_flow: {
+                quote_source: "quote_preparation_failed",
+                provided_quote_id: providedQuoteId,
+                prepared_quote_id: null,
+                auto_prepared_quote: false,
+              },
+            },
+          })
+        );
+      }
+
+      quoteSource = "fresh_quote_prepared";
+    }
+
+    const payload = await createBookingIntent(
+      store,
+      {
+        prepared_quote_id: effectivePreparedQuoteId,
+        payment_method: args.payment_method,
+        guest_primary: args.guest_primary,
+        contact: args.contact,
+        companions: args.companions,
+        children: args.children,
+        arrival_time: args.arrival_time,
+        special_requests: args.special_requests,
+        user_info: args.user_info,
+      },
+      toolOptions
+    );
+
+    return asTextResult(
+      rewriteToolResult(payload, {
+        tool: "create_booking",
+        selection_hint:
+          quoteSource === "fresh_quote_prepared"
+            ? `create_booking automatically minted fresh prepared_quote_id ${effectivePreparedQuoteId} before creating the booking intent.`
+            : `create_booking used prepared_quote_id ${effectivePreparedQuoteId} directly.`,
+        data_patch: {
+          create_booking_flow: {
+            quote_source: quoteSource,
+            provided_quote_id: providedQuoteId,
+            prepared_quote_id: effectivePreparedQuoteId,
+            auto_prepared_quote: quoteSource === "fresh_quote_prepared",
+          },
+        },
+      })
+    );
+  }
+);
+
+server.registerTool(
+  "prepare_booking_quote",
+  {
+    description:
+      `Low-level quote-freeze tool. Re-fetch live room inventory and freeze a short-lived booking quote for a specific hotel / room / rate selection. This is the only public MCP tool that mints a booking quote usable by create_booking_intent. If guest and contact details are already known and you want the shortest public booking path, prefer create_booking instead. ${relativeDateInstruction}`,
+    outputSchema: agenticToolOutputSchema,
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
     },
+    inputSchema: z.preprocess(
+      (input) => normalizePrepareBookingQuoteArgs(input),
+      z.object({
+        hotel_id: z.string().min(1).describe("Bitvoya hotel id."),
+        hotel_name: z.string().min(1).optional().describe("Optional hotel name hint for recovering canonical live hotel id."),
+        city_name: z.string().min(1).optional().describe("Optional city name hint paired with hotel_name for identity recovery."),
+        room_id: z.string().min(1).describe("Selected room id."),
+        rate_id: z.string().min(1).describe("Selected rate id from get_hotel_rooms."),
+        checkin: z.string().min(1).describe(`Stay start date in YYYY-MM-DD. ${relativeDateInstruction}`),
+        checkout: z.string().min(1).describe(`Stay end date in YYYY-MM-DD. ${relativeDateInstruction}`),
+        adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
+        child_num: z.number().int().min(0).max(6).optional().describe("Number of children."),
+        room_num: z.number().int().min(1).max(4).optional().describe("Number of rooms requested."),
+      })
+    ),
   },
   async ({ hotel_id, hotel_name, city_name, room_id, rate_id, checkin, checkout, adult_num, child_num, room_num }, extra) => {
     const payload = await prepareBookingQuote(api, db, store, config, {
@@ -798,66 +1831,40 @@ server.registerTool(
   "create_booking_intent",
   {
     description:
-      "Create a server-owned booking intent from a valid prepared booking quote, with guest/contact data and payment-path selection. Only use the quote returned by prepare_booking_quote; never pass search-context or frontend page tokens.",
+      "Low-level specialist tool for agents that already hold a fresh prepared_quote_id from prepare_booking_quote in the same MCP runtime. Only use the quote returned by prepare_booking_quote; never pass search-context or frontend page tokens. If you only have hotel_id / room_id / rate_id plus traveler details, prefer create_booking instead.",
     outputSchema: agenticToolOutputSchema,
     annotations: {
       readOnlyHint: false,
       openWorldHint: false,
     },
-    inputSchema: z.object({
-      prepared_quote_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe("Preferred prepared booking quote id from prepare_booking_quote. This is the only quote input that should be used for booking execution."),
-      quote_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe("Deprecated alias for prepared_quote_id. Only pass the short-lived server-owned quote returned by prepare_booking_quote; never pass search-context or frontend quote-like tokens."),
-      payment_method: z.enum(["prepay", "guarantee"]).describe("Selected payment path."),
-      guest_primary: z.object({
-        first_name: z.string().min(1),
-        last_name: z.string().min(1),
-        gender: z.string().optional(),
-        frequent_traveler: z.string().optional(),
-        membership_level: z.string().optional(),
-      }),
-      contact: z.object({
-        email: z.string().min(1),
-        phone: z.string().min(1),
-        country_code: z.string().optional(),
-        custom_country_code: z.string().optional(),
-        full_phone: z.string().optional(),
-      }),
-      companions: z
-        .array(
-          z.object({
-            first_name: z.string().min(1),
-            last_name: z.string().min(1),
-            gender: z.string().optional(),
-          })
-        )
-        .optional(),
-      children: z
-        .array(
-          z.object({
-            age: z.number().int().min(0).max(17),
-          })
-        )
-        .optional(),
-      arrival_time: z.string().optional(),
-      special_requests: z.array(z.string().min(1)).optional(),
-      user_info: z
-        .record(z.string(), z.unknown())
-        .optional()
-        .describe(
-          "Optional user snapshot for later legacy-submit bridging. You may also pass user_info.preferred_language or user_info.lang so Bitvoya secure checkout follows the traveler language. Supported display languages are English, Chinese, Japanese, and Korean; other languages fall back to English."
-        ),
-    }).refine((value) => Boolean(value.prepared_quote_id || value.quote_id), {
-      message: "One of prepared_quote_id or quote_id is required.",
-      path: ["prepared_quote_id"],
-    }),
+    inputSchema: z.preprocess(
+      (input) => normalizeCreateBookingIntentArgs(input),
+      z
+        .object({
+          prepared_quote_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Preferred prepared booking quote id from prepare_booking_quote. This is the only quote input that should be used for booking execution."),
+          quote_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Deprecated alias for prepared_quote_id. Only pass the short-lived server-owned quote returned by prepare_booking_quote; never pass search-context or frontend quote-like tokens."),
+          payment_method: paymentMethodSchema.describe("Selected payment path."),
+          guest_primary: guestPrimaryInputSchema,
+          contact: contactInputSchema,
+          companions: companionsInputSchema,
+          children: childrenInputSchema,
+          arrival_time: z.string().optional(),
+          special_requests: z.array(z.string().min(1)).optional(),
+          user_info: userInfoInputSchema,
+        })
+        .refine((value) => Boolean(value.prepared_quote_id || value.quote_id), {
+          message: "One of prepared_quote_id or quote_id is required.",
+          path: ["prepared_quote_id"],
+        })
+    ),
   },
   async ({ prepared_quote_id, quote_id, payment_method, guest_primary, contact, companions, children, arrival_time, special_requests, user_info }, extra) => {
     const payload = await createBookingIntent(store, {
@@ -936,20 +1943,25 @@ server.registerTool(
       readOnlyHint: true,
       openWorldHint: false,
     },
-    inputSchema: z.object({
-      prepared_quote_id: z
-        .string()
-        .optional()
-        .describe("Preferred prepared booking quote id from prepare_booking_quote."),
-      quote_id: z
-        .string()
-        .optional()
-        .describe("Deprecated alias for prepared_quote_id."),
-      intent_id: z.string().optional().describe("Intent id."),
-    }).refine((value) => Boolean(value.intent_id || value.prepared_quote_id || value.quote_id), {
-      message: "One of intent_id, prepared_quote_id, or quote_id is required.",
-      path: ["intent_id"],
-    }),
+    inputSchema: z.preprocess(
+      (input) => normalizeBookingStateArgs(input),
+      z
+        .object({
+          prepared_quote_id: z
+            .string()
+            .optional()
+            .describe("Preferred prepared booking quote id from prepare_booking_quote."),
+          quote_id: z
+            .string()
+            .optional()
+            .describe("Deprecated alias for prepared_quote_id."),
+          intent_id: z.string().optional().describe("Intent id."),
+        })
+        .refine((value) => Boolean(value.intent_id || value.prepared_quote_id || value.quote_id), {
+          message: "One of intent_id, prepared_quote_id, or quote_id is required.",
+          path: ["intent_id"],
+        })
+    ),
   },
   async ({ prepared_quote_id, quote_id, intent_id }) => {
     const payload = await getBookingState(store, {
@@ -1174,7 +2186,7 @@ server.registerTool(
 server.registerTool(
   "search_hotels_grounding",
   agenticReadTool({
-    description: "Search tripwiki hotel grounding cards without hitting live product inventory.",
+    description: "Grounding-only hotel search without live product inventory. Use this only when live availability and pricing are not required, or when the workflow explicitly needs grounding fallback.",
     inputSchema: {
       query: z.string().min(1).describe("Hotel name, brand, or destination keyword."),
       city_name: z.string().optional().describe("Optional city filter."),
@@ -1191,7 +2203,7 @@ server.registerTool(
 server.registerTool(
   "get_hotel_grounding",
   agenticReadTool({
-    description: "Get a grounded Bitvoya hotel card with transport, traveler fit, and nearby POIs.",
+    description: "Get a grounded Bitvoya hotel card with transport, traveler fit, and nearby POIs after a hotel candidate is already known. Not a primary first-step search tool.",
     inputSchema: {
       source_hotel_id: z.string().optional().describe("Bitvoya / source hotel id."),
       tripwiki_hotel_id: z.string().optional().describe("Tripwiki canonical hotel id."),
