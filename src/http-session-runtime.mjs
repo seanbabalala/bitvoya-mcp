@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+const DEFAULT_CLOSED_SESSION_RETENTION_MS = 60 * 60 * 1000;
+
 async function safeCloseRuntime(record) {
   try {
     if (record?.transport) {
@@ -26,15 +28,25 @@ function buildRuntimeRecord(runtime, options = {}) {
     principalSummary: options.principalSummary || null,
     createdAt: now,
     lastSeenAt: now,
+    requestCount: 0,
+    activeRequestCount: 0,
+    lastRequestStartedAt: null,
+    lastRequestCompletedAt: null,
     closed: false,
     closeReason: null,
+    closedAt: null,
   };
 }
 
 export function createHttpSessionRuntimeManager(options = {}) {
   const sessions = new Map();
   const pending = new Map();
+  const closedSessions = new Map();
   const idleTimeoutMs = Math.max(0, Number(options.idleTimeoutMs || 0));
+  const closedSessionRetentionMs = Math.max(
+    1_000,
+    Number(options.closedSessionRetentionMs || DEFAULT_CLOSED_SESSION_RETENTION_MS)
+  );
   const sweepIntervalMs = Math.max(
     10,
     Number(options.sweepIntervalMs || Math.min(idleTimeoutMs || 60_000, 60_000))
@@ -77,6 +89,37 @@ export function createHttpSessionRuntimeManager(options = {}) {
     return record;
   }
 
+  function pruneClosedSessions() {
+    const cutoff = Date.now() - closedSessionRetentionMs;
+
+    for (const [sessionId, summary] of closedSessions.entries()) {
+      if ((summary?.closedAt || 0) < cutoff) {
+        closedSessions.delete(sessionId);
+      }
+    }
+  }
+
+  function rememberClosedSession(record) {
+    if (!record?.sessionId) {
+      return;
+    }
+
+    pruneClosedSessions();
+    closedSessions.set(String(record.sessionId), {
+      runtimeId: record.runtimeId,
+      sessionId: record.sessionId,
+      principalSummary: record.principalSummary || null,
+      createdAt: record.createdAt,
+      lastSeenAt: record.lastSeenAt,
+      requestCount: record.requestCount || 0,
+      activeRequestCount: record.activeRequestCount || 0,
+      lastRequestStartedAt: record.lastRequestStartedAt || null,
+      lastRequestCompletedAt: record.lastRequestCompletedAt || null,
+      closeReason: record.closeReason || "unknown",
+      closedAt: record.closedAt || Date.now(),
+    });
+  }
+
   function getSessionRuntime(sessionId) {
     if (!sessionId) {
       return null;
@@ -105,6 +148,31 @@ export function createHttpSessionRuntimeManager(options = {}) {
     return record;
   }
 
+  function beginRuntimeRequest(record) {
+    if (!record || record.closed) {
+      return null;
+    }
+
+    const now = Date.now();
+    record.lastSeenAt = now;
+    record.lastRequestStartedAt = now;
+    record.requestCount += 1;
+    record.activeRequestCount += 1;
+    return record;
+  }
+
+  function endRuntimeRequest(record) {
+    if (!record || record.closed) {
+      return null;
+    }
+
+    const now = Date.now();
+    record.lastSeenAt = now;
+    record.lastRequestCompletedAt = now;
+    record.activeRequestCount = Math.max(0, Number(record.activeRequestCount || 0) - 1);
+    return record;
+  }
+
   async function closeRecord(record, reason = "unknown") {
     if (!record || record.closed) {
       return false;
@@ -112,6 +180,7 @@ export function createHttpSessionRuntimeManager(options = {}) {
 
     record.closed = true;
     record.closeReason = String(reason || "unknown");
+    record.closedAt = Date.now();
 
     if (record.sessionId) {
       sessions.delete(String(record.sessionId));
@@ -121,6 +190,7 @@ export function createHttpSessionRuntimeManager(options = {}) {
       pending.delete(String(record.pendingId));
     }
 
+    rememberClosedSession(record);
     await safeCloseRuntime(record);
 
     if (onRuntimeClosed) {
@@ -216,13 +286,21 @@ export function createHttpSessionRuntimeManager(options = {}) {
     const idleRecords = [];
 
     for (const record of sessions.values()) {
-      if (!record.closed && now - record.lastSeenAt >= idleTimeoutMs) {
+      if (
+        !record.closed &&
+        Number(record.activeRequestCount || 0) === 0 &&
+        now - record.lastSeenAt >= idleTimeoutMs
+      ) {
         idleRecords.push(record);
       }
     }
 
     for (const record of pending.values()) {
-      if (!record.closed && now - record.lastSeenAt >= idleTimeoutMs) {
+      if (
+        !record.closed &&
+        Number(record.activeRequestCount || 0) === 0 &&
+        now - record.lastSeenAt >= idleTimeoutMs
+      ) {
         idleRecords.push(record);
       }
     }
@@ -255,6 +333,8 @@ export function createHttpSessionRuntimeManager(options = {}) {
   }
 
   function getSnapshot() {
+    pruneClosedSessions();
+
     return {
       sessionCount: sessions.size,
       pendingCount: pending.size,
@@ -263,6 +343,10 @@ export function createHttpSessionRuntimeManager(options = {}) {
         sessionId: record.sessionId,
         createdAt: record.createdAt,
         lastSeenAt: record.lastSeenAt,
+        requestCount: record.requestCount,
+        activeRequestCount: record.activeRequestCount,
+        lastRequestStartedAt: record.lastRequestStartedAt,
+        lastRequestCompletedAt: record.lastRequestCompletedAt,
         principalSummary: record.principalSummary,
       })),
       pending: Array.from(pending.values()).map((record) => ({
@@ -270,14 +354,31 @@ export function createHttpSessionRuntimeManager(options = {}) {
         pendingId: record.pendingId,
         createdAt: record.createdAt,
         lastSeenAt: record.lastSeenAt,
+        requestCount: record.requestCount,
+        activeRequestCount: record.activeRequestCount,
+        lastRequestStartedAt: record.lastRequestStartedAt,
+        lastRequestCompletedAt: record.lastRequestCompletedAt,
         principalSummary: record.principalSummary,
       })),
+      closedSessions: Array.from(closedSessions.values()),
     };
   }
 
+  function getClosedSessionSummary(sessionId) {
+    if (!sessionId) {
+      return null;
+    }
+
+    pruneClosedSessions();
+    return closedSessions.get(String(sessionId)) || null;
+  }
+
   return {
+    beginRuntimeRequest,
     createPendingSessionRuntime,
     bindPendingSessionRuntime,
+    endRuntimeRequest,
+    getClosedSessionSummary,
     getOrCreateSessionRuntime,
     getPendingSessionRuntime,
     getSessionRuntime,

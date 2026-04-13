@@ -254,17 +254,24 @@ function sendJsonRpcError(
   message,
   id = null,
   req = null,
-  remoteSecurity = { allowedOrigins: [] }
+  remoteSecurity = { allowedOrigins: [] },
+  errorData = null
 ) {
+  const error = {
+    code: statusCode >= 500 ? -32603 : -32000,
+    message,
+  };
+
+  if (errorData && typeof errorData === "object") {
+    error.data = errorData;
+  }
+
   sendJson(
     res,
     statusCode,
     {
       jsonrpc: "2.0",
-      error: {
-        code: statusCode >= 500 ? -32603 : -32000,
-        message,
-      },
+      error,
       id,
     },
     req,
@@ -342,6 +349,36 @@ function emitStructuredLog(logger, entry) {
   }
 
   console.error(line);
+}
+
+function buildClosedSessionDiagnostics(summary, sessionIdleTimeoutMs) {
+  if (!summary) {
+    return null;
+  }
+
+  const now = Date.now();
+
+  return {
+    runtime_id: summary.runtimeId || null,
+    close_reason: summary.closeReason || "unknown",
+    created_at: summary.createdAt || null,
+    last_seen_at: summary.lastSeenAt || null,
+    last_request_started_at: summary.lastRequestStartedAt || null,
+    last_request_completed_at: summary.lastRequestCompletedAt || null,
+    closed_at: summary.closedAt || null,
+    request_count: summary.requestCount || 0,
+    active_request_count: summary.activeRequestCount || 0,
+    lifetime_ms:
+      Number.isFinite(summary.createdAt) && Number.isFinite(summary.closedAt)
+        ? Math.max(0, summary.closedAt - summary.createdAt)
+        : null,
+    idle_for_ms:
+      Number.isFinite(summary.lastSeenAt) && Number.isFinite(summary.closedAt)
+        ? Math.max(0, summary.closedAt - summary.lastSeenAt)
+        : null,
+    close_age_ms: Number.isFinite(summary.closedAt) ? Math.max(0, now - summary.closedAt) : null,
+    idle_timeout_ms: sessionIdleTimeoutMs,
+  };
 }
 
 function extractJsonRpcMethod(body) {
@@ -571,11 +608,23 @@ export async function startRemoteServer(options = {}) {
     idleTimeoutMs: sessionIdleTimeoutMs,
     sweepIntervalMs: sessionSweepIntervalMs,
     onRuntimeClosed(record, reason) {
+      const closedSession = buildClosedSessionDiagnostics(record, sessionIdleTimeoutMs);
       emitStructuredLog(logger, {
         event: "mcp_session_runtime_closed",
         session_id: record?.sessionId || null,
+        pending_id: record?.pendingId || null,
         runtime_id: record?.runtimeId || null,
         reason,
+        created_at: closedSession?.created_at || null,
+        last_seen_at: closedSession?.last_seen_at || null,
+        last_request_started_at: closedSession?.last_request_started_at || null,
+        last_request_completed_at: closedSession?.last_request_completed_at || null,
+        closed_at: closedSession?.closed_at || null,
+        request_count: closedSession?.request_count || 0,
+        active_request_count: closedSession?.active_request_count || 0,
+        lifetime_ms: closedSession?.lifetime_ms || null,
+        idle_for_ms: closedSession?.idle_for_ms || null,
+        idle_timeout_ms: sessionIdleTimeoutMs,
       });
     },
   });
@@ -616,8 +665,10 @@ export async function startRemoteServer(options = {}) {
     let runtimeState = "none";
     let pendingId = null;
     let ephemeralRuntime = null;
+    let trackedRuntimeRecord = null;
     let responseLogged = false;
     let resolvedSessionId = requestMeta.mcp_session_id || null;
+    let closedSessionInfo = null;
 
     const finalizeLog = () => {
       if (responseLogged) {
@@ -649,6 +700,10 @@ export async function startRemoteServer(options = {}) {
         auth_reason: authSummary.auth_reason,
         principal_type: authSummary.principal_type,
         token_id_hint: authSummary.token_id_hint,
+        session_close_reason: closedSessionInfo?.close_reason || null,
+        session_closed_at: closedSessionInfo?.closed_at || null,
+        session_close_age_ms: closedSessionInfo?.close_age_ms || null,
+        session_idle_for_ms: closedSessionInfo?.idle_for_ms || null,
       });
     };
 
@@ -728,13 +783,42 @@ export async function startRemoteServer(options = {}) {
       if (requestedSessionId) {
         runtimeRecord = sessionManager.getSessionRuntime(requestedSessionId);
         if (!runtimeRecord) {
-          sendJsonRpcError(res, 404, "Session not found", null, req, remoteSecurity);
+          closedSessionInfo = buildClosedSessionDiagnostics(
+            sessionManager.getClosedSessionSummary(requestedSessionId),
+            sessionIdleTimeoutMs
+          );
+
+          emitStructuredLog(logger, {
+            event: "mcp_session_lookup_miss",
+            session_id: requestedSessionId,
+            runtime_id: closedSessionInfo?.runtime_id || null,
+            jsonrpc_method: jsonrpcMethod,
+            method: requestMeta.method,
+            path: requestMeta.path,
+            close_reason: closedSessionInfo?.close_reason || null,
+            closed_at: closedSessionInfo?.closed_at || null,
+            close_age_ms: closedSessionInfo?.close_age_ms || null,
+            idle_for_ms: closedSessionInfo?.idle_for_ms || null,
+            request_count: closedSessionInfo?.request_count || 0,
+            idle_timeout_ms: sessionIdleTimeoutMs,
+          });
+
+          sendJsonRpcError(
+            res,
+            404,
+            "Session not found",
+            null,
+            req,
+            remoteSecurity,
+            closedSessionInfo
+          );
           return;
         }
 
         ensureSessionAuthBinding(runtimeRecord, authInfo);
         resolvedSessionId = runtimeRecord.sessionId;
         runtimeState = "reused";
+        trackedRuntimeRecord = sessionManager.beginRuntimeRequest(runtimeRecord);
       } else if (isInitializeRequest) {
         const created = await sessionManager.createPendingSessionRuntime(
           requestPrincipalSummary,
@@ -754,6 +838,7 @@ export async function startRemoteServer(options = {}) {
         pendingId = created.pendingId;
         runtimeRecord = created.record;
         runtimeState = "created";
+        trackedRuntimeRecord = sessionManager.beginRuntimeRequest(runtimeRecord);
       } else if (req.method === "GET") {
         const runtime = await createConnectedRuntime(
           buildServer,
@@ -853,6 +938,10 @@ export async function startRemoteServer(options = {}) {
         req,
         remoteSecurity
       );
+    } finally {
+      if (trackedRuntimeRecord) {
+        sessionManager.endRuntimeRequest(trackedRuntimeRecord);
+      }
     }
   });
 

@@ -183,7 +183,7 @@ Agents should present pricing carefully.
 - FAQ: [docs/public/FAQ.md](docs/public/FAQ.md)
 - security model: [docs/public/SECURITY_MODEL.md](docs/public/SECURITY_MODEL.md)
 - secure handoff design: [docs/public/SECURE_HANDOFF.md](docs/public/SECURE_HANDOFF.md)
-- release notes: [docs/public/releases/v0.3.0.md](docs/public/releases/v0.3.0.md)
+- release notes: [docs/public/releases/v0.3.1.md](docs/public/releases/v0.3.1.md)
 - registry metadata: [server.json](server.json)
 - maintainer setup: [DEVELOPMENT.md](DEVELOPMENT.md)
 

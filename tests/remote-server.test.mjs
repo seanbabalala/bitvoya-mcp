@@ -185,7 +185,7 @@ async function startTestRuntime(options = {}) {
   const runtime = await startRemoteServer({
     config: createTestConfig(options.config || {}),
     authDb,
-    buildServer,
+    buildServer: options.buildServer || buildServer,
     logger(entry) {
       logs.push(entry);
     },
@@ -247,6 +247,50 @@ async function sendToolsList(runtime, sessionId, options = {}) {
     response,
     payload: parseJsonBody(response),
   };
+}
+
+async function sendToolCall(runtime, sessionId, toolName, args = {}, options = {}) {
+  const response = await sendHttpRequest({
+    port: runtime.port,
+    method: "POST",
+    path: "/mcp",
+    headers: {
+      Accept: options.accept || "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${options.rawToken || RAW_AGENT_TOKEN}`,
+      "Mcp-Session-Id": sessionId,
+      "Mcp-Protocol-Version": options.protocolVersion || TEST_PROTOCOL_VERSION,
+      ...(options.headers || {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: options.id || 3,
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: args,
+      },
+    }),
+  });
+
+  return {
+    response,
+    payload: parseJsonBody(response),
+  };
+}
+
+async function waitFor(predicate, timeoutMs = 300, intervalMs = 10) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
 }
 
 test("OPTIONS /mcp returns 204", async () => {
@@ -371,6 +415,103 @@ test("idle timeout clears inactive session runtimes", async () => {
         (entry) => entry.event === "mcp_session_runtime_closed" && entry.reason === "idle_timeout"
       )
     );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("lookup miss exposes recently closed session reason", async () => {
+  const harness = await startTestRuntime({
+    config: {
+      http: {
+        sessionIdleTimeoutMs: 40,
+        sessionSweepIntervalMs: 10,
+      },
+    },
+  });
+
+  try {
+    const initialize = await initializeSession(harness.runtime);
+    assert.equal(initialize.response.statusCode, 200);
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const toolsList = await sendToolsList(harness.runtime, initialize.sessionId);
+    assert.equal(toolsList.response.statusCode, 404);
+    assert.equal(toolsList.payload.error.message, "Session not found");
+    assert.equal(toolsList.payload.error.data.close_reason, "idle_timeout");
+    assert.equal(toolsList.payload.error.data.idle_timeout_ms, 40);
+    assert.ok(
+      harness.logs.some(
+        (entry) => entry.event === "mcp_session_lookup_miss" && entry.close_reason === "idle_timeout"
+      )
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("idle sweep skips sessions with active requests", async () => {
+  const harness = await startTestRuntime({
+    config: {
+      http: {
+        sessionIdleTimeoutMs: 40,
+        sessionSweepIntervalMs: 10,
+      },
+    },
+    buildServer() {
+      const server = new McpServer({
+        name: "bitvoya-mcp-test",
+        version: "0.0.0",
+      });
+
+      server.registerTool(
+        "slow_ping",
+        {
+          description: "Slow test tool.",
+          inputSchema: {},
+        },
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return {
+            content: [
+              {
+                type: "text",
+                text: "pong",
+              },
+            ],
+          };
+        }
+      );
+
+      return server;
+    },
+  });
+
+  try {
+    const initialize = await initializeSession(harness.runtime);
+    assert.equal(initialize.response.statusCode, 200);
+
+    const toolCallPromise = sendToolCall(harness.runtime, initialize.sessionId, "slow_ping");
+
+    await waitFor(() => {
+      const snapshot = harness.runtime.getSessionRuntimeSnapshot();
+      return snapshot.sessionCount === 1 && snapshot.sessions[0].activeRequestCount === 1;
+    });
+
+    assert.equal(harness.runtime.getSessionRuntimeSnapshot().sessionCount, 1);
+
+    const toolCall = await toolCallPromise;
+    assert.equal(toolCall.response.statusCode, 200);
+    assert.equal(toolCall.payload.result.content[0].text, "pong");
+
+    const afterCall = harness.runtime.getSessionRuntimeSnapshot();
+    assert.equal(afterCall.sessionCount, 1);
+    assert.equal(afterCall.sessions[0].activeRequestCount, 0);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(harness.runtime.getSessionRuntimeSnapshot().sessionCount, 0);
   } finally {
     await harness.close();
   }
