@@ -59,6 +59,8 @@ Most MCP clients add that automatically.
 
 Cherry Studio users should not assume the generic example above is directly importable. Use the Cherry Studio-specific setup in [docs/public/CLIENT_SETUP.md](docs/public/CLIENT_SETUP.md), especially the wrapped JSON import format plus manual `Authorization` header entry.
 
+For other common MCP hosts and agent clients such as Cursor, Windsurf, Claude Code, GitHub Copilot CLI, and Goose, use the client-specific examples in [docs/public/CLIENT_SETUP.md](docs/public/CLIENT_SETUP.md). The repo also includes a machine-readable [server.json](server.json) for registry-oriented distribution flows.
+
 ## Recommended Models
 
 If your MCP client lets you choose the driving model, Bitvoya recommends higher-capability models with strong tool-use behavior.
@@ -140,6 +142,7 @@ Benefit availability depends on hotel, rate, market, and stay dates. Agents shou
 - frequently asked questions: [docs/public/FAQ.md](docs/public/FAQ.md)
 - security and access model: [docs/public/SECURITY_MODEL.md](docs/public/SECURITY_MODEL.md)
 - secure checkout handoff design: [docs/public/SECURE_HANDOFF.md](docs/public/SECURE_HANDOFF.md)
+- registry metadata: [server.json](server.json)
 
 ## License
 

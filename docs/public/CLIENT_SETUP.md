@@ -29,6 +29,20 @@ Notes:
 - if your client uses a different field name such as `baseUrl` or `requestHeaders`, keep the same endpoint and header values
 - low-level manual HTTP testing should also send `Accept: application/json, text/event-stream`
 
+## Registry Metadata
+
+This repository ships a root-level `server.json` for registry-oriented and machine-readable MCP installation flows:
+
+- [server.json](../../server.json)
+
+That metadata points to the same hosted endpoint:
+
+- `https://bitvoya.com/api/mcp`
+
+and still requires the same Bitvoya-issued bearer credential:
+
+- `Authorization: Bearer <your_agent_key>`
+
 ## Cherry Studio
 
 Cherry Studio supports MCP server configuration from the MCP settings area. UI labels may vary slightly by version, but the core values stay the same.
@@ -86,6 +100,181 @@ Do not assume this older generic shape will import correctly in Cherry Studio:
 ```
 
 That format may still work in some other MCP clients, but Cherry Studio users should prefer the wrapped `mcpServers` import above or manual form entry.
+
+## Cursor
+
+Cursor supports remote MCP servers through `mcp.json`.
+
+Recommended setup:
+
+1. Open or create one of these files:
+   - project-specific: `.cursor/mcp.json`
+   - global: `~/.cursor/mcp.json`
+2. Add a Bitvoya entry:
+
+```json
+{
+  "mcpServers": {
+    "bitvoya": {
+      "url": "https://bitvoya.com/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:BITVOYA_AGENT_KEY}"
+      }
+    }
+  }
+}
+```
+
+3. Export your key before launching Cursor:
+
+```bash
+export BITVOYA_AGENT_KEY="<your_agent_key>"
+```
+
+4. Enable the server in Cursor and test a hotel-search prompt.
+
+Notes:
+
+- Cursor also supports one-click MCP installation and registry-oriented flows, but the JSON above is the most explicit manual setup
+- using an environment variable is safer than hardcoding the bearer token into `mcp.json`
+
+## Windsurf
+
+Windsurf supports remote MCP over Streamable HTTP.
+
+Recommended flow:
+
+1. Open Windsurf MCP settings from the Cascade panel, or edit the raw `mcp_config.json`
+2. Add a remote HTTP entry like this:
+
+```json
+{
+  "mcpServers": {
+    "bitvoya": {
+      "serverUrl": "https://bitvoya.com/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:BITVOYA_AGENT_KEY}"
+      }
+    }
+  }
+}
+```
+
+3. Set the environment variable used above:
+
+```bash
+export BITVOYA_AGENT_KEY="<your_agent_key>"
+```
+
+4. Enable the MCP inside Cascade and test a tool-using prompt.
+
+Notes:
+
+- Windsurf documents `serverUrl` for remote HTTP MCP entries; some versions also accept `url`
+- Windsurf supports manual tool toggling, which is useful if you want Bitvoya exposed only in travel-oriented chats
+
+## Claude Code
+
+Claude Code supports remote HTTP MCP servers directly from the CLI.
+
+Recommended command:
+
+```bash
+claude mcp add --transport http bitvoya https://bitvoya.com/api/mcp \
+  --header "Authorization: Bearer $BITVOYA_AGENT_KEY"
+```
+
+If you want the config available across projects, add `--scope user`:
+
+```bash
+claude mcp add --scope user --transport http bitvoya https://bitvoya.com/api/mcp \
+  --header "Authorization: Bearer $BITVOYA_AGENT_KEY"
+```
+
+Before running the command:
+
+```bash
+export BITVOYA_AGENT_KEY="<your_agent_key>"
+```
+
+Useful follow-up commands:
+
+- `claude mcp list`
+- `claude mcp get bitvoya`
+- `/mcp`
+
+## GitHub Copilot CLI
+
+GitHub Copilot CLI supports remote HTTP MCP servers.
+
+Interactive setup:
+
+1. Start Copilot CLI interactive mode
+2. Run:
+   - `/mcp add`
+3. Choose server type:
+   - `HTTP`
+4. Fill in:
+   - server name: `bitvoya`
+   - URL: `https://bitvoya.com/api/mcp`
+   - HTTP headers: `{"Authorization":"Bearer <your_agent_key>"}`
+   - tools: `*`
+5. Save
+
+Manual config file option:
+
+```json
+{
+  "mcpServers": {
+    "bitvoya": {
+      "type": "http",
+      "url": "https://bitvoya.com/api/mcp",
+      "headers": {
+        "Authorization": "Bearer <your_agent_key>"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Store that in:
+
+- `~/.copilot/mcp-config.json`
+
+## Goose
+
+Goose supports remote extensions over Streamable HTTP.
+
+CLI flow:
+
+1. Run:
+   - `goose configure`
+2. Choose:
+   - `Add Extension`
+   - `Remote Extension (Streamable HTTP)`
+3. Name the extension:
+   - `bitvoya`
+4. Set the endpoint:
+   - `https://bitvoya.com/api/mcp`
+5. Add a custom header:
+   - `Authorization: Bearer <your_agent_key>`
+6. Save and enable the extension
+
+Desktop flow:
+
+1. Open the Extensions area
+2. Add a custom extension
+3. Choose remote / Streamable HTTP
+4. Enter the same Bitvoya endpoint and `Authorization` header
+
+## Other Remote-Capable Hosts
+
+If a client supports remote MCP over Streamable HTTP, the portable values are still the same:
+
+- URL: `https://bitvoya.com/api/mcp`
+- header: `Authorization: Bearer <your_agent_key>`
+- preferred model: `Claude 4.6`, `GPT-5.4`, or a comparable flagship model with strong tool-use behavior
 
 ## Generic MCP Clients
 

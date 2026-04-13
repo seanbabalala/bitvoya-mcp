@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.seanbabalala/bitvoya-mcp",
+  "title": "Bitvoya MCP",
+  "description": "Luxury hotel discovery, rate comparison, quote preparation, and secure checkout handoff for AI travel agents.",
+  "repository": {
+    "url": "https://github.com/seanbabalala/bitvoya-mcp",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://bitvoya.com/api/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer agent key from Bitvoya Dashboard -> Connect Agent. Format: Bearer <your_agent_key>.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
