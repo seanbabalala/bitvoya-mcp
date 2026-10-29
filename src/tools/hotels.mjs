@@ -1419,6 +1419,33 @@ function sortRatesByDisplayTotal(a, b) {
   return valueA - valueB;
 }
 
+const WHALE_MEAL_PLANS = new Set(["BREAKFAST_ONLY", "HALF_BOARD", "FULL_BOARD", "NO_MEAL"]);
+
+// Whale 2026-10-26: `mealPlan` replaces `breakfast`. The Bitvoya API adds the normalised
+// `meal_plan`; older API builds only send `breakfast` (1 / 0).
+function normalizeMealPlan(rate) {
+  for (const value of [rate?.meal_plan, rate?.mealPlan]) {
+    if (WHALE_MEAL_PLANS.has(value)) return value;
+  }
+  const breakfast = rate?.breakfast;
+  if (breakfast === 1 || breakfast === "1" || breakfast === true) return "BREAKFAST_ONLY";
+  if (breakfast === 0 || breakfast === "0" || breakfast === false) return "NO_MEAL";
+  return null;
+}
+
+// Whale: cancellation data in rate lists is only reliable for SABRE rates. The Bitvoya API
+// marks the others `confirmed: false`; "unknown" means "check the quote", not non-refundable.
+function normalizeCancellationState(rate) {
+  const state = rate?.cancellation;
+  if (state && typeof state === "object" && typeof state.status === "string") {
+    return { status: state.status, confirmed: state.confirmed === true };
+  }
+  return {
+    status: firstNonEmpty(rate?.cancelPolicy?.cancelTime) ? "free_cancellation" : "unknown",
+    confirmed: false,
+  };
+}
+
 function normalizeRate(rate) {
   const supplierTotal = roundNullableNumber(firstNonEmpty(rate?.totalPriceCny, rate?.totalPrice));
   const taxTotal = roundNullableNumber(firstNonEmpty(rate?.taxPriceCny, rate?.taxPrice));
@@ -1435,6 +1462,8 @@ function normalizeRate(rate) {
 
   const prepaySupported = asBoolean(rate?.paymentType?.allowPayAll);
   const guaranteeSupported = asBoolean(rate?.paymentType?.allowCreditGuarantee);
+  const mealPlan = normalizeMealPlan(rate);
+  const cancellationState = normalizeCancellationState(rate);
 
   return {
     rate_id: normalizeId(rate?.id),
@@ -1442,7 +1471,11 @@ function normalizeRate(rate) {
     room_id: normalizeId(rate?.roomId),
     rate_name: firstNonEmpty(rate?.name),
     rate_name_en: firstNonEmpty(rate?.nameEn),
-    breakfast: rate?.breakfast ?? null,
+    breakfast: rate?.breakfast ?? (mealPlan === null ? null : mealPlan === "NO_MEAL" ? 0 : 1),
+    meal_plan: mealPlan,
+    executive_benefit: rate?.executive_benefit === true || rate?.executiveBenefit === "INCLUDE",
+    // Hotel-group member rate: Whale needs the guest's membership number (guest_primary.frequent_traveler).
+    member_required: rate?.member_required === true,
     pricing: {
       currency: "CNY",
       supplier_currency: supplierCurrency || null,
@@ -1456,6 +1489,8 @@ function normalizeRate(rate) {
         "display_total_cny mirrors the current guest-facing checkout total when total_with_service_fee is present.",
     },
     cancellation: {
+      status: cancellationState.status,
+      confirmed: cancellationState.confirmed,
       free_cancel_until: firstNonEmpty(rate?.cancelPolicy?.cancelTime),
       penalty_cny: roundNullableNumber(rate?.cancelPolicy?.penalty),
       penalty_currency: "CNY",
@@ -2018,7 +2053,8 @@ function buildRatePriorityReason(entry, topDimension, preferences = null) {
     }
     case "flexibility":
       if (entry?.rate?.cancellation?.free_cancel_until) {
-        return `Free cancellation is exposed until ${entry.rate.cancellation.free_cancel_until}.`;
+        const unconfirmed = entry.rate.cancellation.confirmed === false ? " (confirmed at checkout)" : "";
+        return `Free cancellation is exposed until ${entry.rate.cancellation.free_cancel_until}${unconfirmed}.`;
       }
       return null;
     case "payment_fit":
@@ -2758,8 +2794,18 @@ function buildRateTradeoffs(rate) {
     tradeoffs.push("Cannot use prepay on this rate.");
   }
 
-  if (!rate?.cancellation?.free_cancel_until) {
-    tradeoffs.push("No free-cancel deadline is exposed for this rate.");
+  if (rate?.cancellation?.status === "non_refundable" && rate?.cancellation?.confirmed) {
+    tradeoffs.push("Non-refundable.");
+  } else if (!rate?.cancellation?.free_cancel_until) {
+    tradeoffs.push(
+      rate?.cancellation?.confirmed === false
+        ? "Cancellation terms are not confirmed in the rate list for this rate; they are confirmed at checkout."
+        : "No free-cancel deadline is exposed for this rate."
+    );
+  }
+
+  if (rate?.member_required) {
+    tradeoffs.push("Hotel loyalty member rate: booking needs the guest's membership number.");
   }
 
   if (countRateBenefits(rate) === 0) {

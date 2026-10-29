@@ -158,6 +158,15 @@ function validateQuotePaymentSupport(quote, paymentMethod) {
   }
 }
 
+// Hotel-group member rates are rejected by the supplier without the guest's membership number.
+function validateQuoteMemberRequirement(quote, guestPrimary) {
+  if (quote?.rate_snapshot?.member_required === true && !String(guestPrimary?.frequent_traveler || "").trim()) {
+    throw new Error(
+      "Selected rate is a hotel loyalty member rate: guest_primary.frequent_traveler (the guest's membership number) is required."
+    );
+  }
+}
+
 function requireGuestPrimary(guestPrimary) {
   const firstName = String(guestPrimary?.first_name || "").trim();
   const lastName = String(guestPrimary?.last_name || "").trim();
@@ -944,6 +953,8 @@ function buildQuotePaymentPath(quote, paymentMethod, options = {}) {
 
 function buildQuoteRequiredInputs(quote, options = {}) {
   const executionMode = normalizeExecutionMode(options);
+  // Hotel-group member rates are rejected by the supplier without the guest's membership number.
+  const memberRequired = quote?.rate_snapshot?.member_required === true;
   const requirements = {
     create_booking_intent: [
       "prepared_quote_id",
@@ -952,10 +963,11 @@ function buildQuoteRequiredInputs(quote, options = {}) {
       "guest_primary.last_name",
       "contact.email",
       "contact.phone",
+      ...(memberRequired ? ["guest_primary.frequent_traveler"] : []),
     ],
     optional_at_intent_creation: [
       "guest_primary.gender",
-      "guest_primary.frequent_traveler",
+      ...(memberRequired ? [] : ["guest_primary.frequent_traveler"]),
       "guest_primary.membership_level",
       "companions[]",
       "children[]",
@@ -2392,6 +2404,9 @@ export async function prepareBookingQuote(api, db, store, config, params, option
       rate_name: selectedRate.rate_name,
       rate_name_en: selectedRate.rate_name_en,
       breakfast: selectedRate.breakfast,
+      meal_plan: selectedRate.meal_plan ?? null,
+      executive_benefit: selectedRate.executive_benefit === true,
+      member_required: selectedRate.member_required === true,
     },
     pricing: selectedRate.pricing,
     payment_options: selectedRate.payment_options,
@@ -2516,6 +2531,7 @@ export async function createBookingIntent(store, params, options = {}) {
   validateQuotePaymentSupport(quote, params.payment_method);
 
   const guestPrimary = requireGuestPrimary(params.guest_primary);
+  validateQuoteMemberRequirement(quote, guestPrimary);
   const contact = requireContact(params.contact);
   const companions = normalizeCompanions(params.companions);
   const children = normalizeChildren(params.children);
