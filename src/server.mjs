@@ -117,7 +117,10 @@ const guestPrimaryInputSchema = z.object({
   first_name: z.string().min(1),
   last_name: z.string().min(1),
   gender: z.string().optional(),
-  frequent_traveler: z.string().optional(),
+  frequent_traveler: z
+    .string()
+    .optional()
+    .describe("Hotel loyalty membership number. Required when the selected rate has member_required: true."),
   membership_level: z.string().optional(),
 });
 const contactInputSchema = z.object({
