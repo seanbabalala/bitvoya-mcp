@@ -4378,6 +4378,65 @@ export async function searchHotelsGrounding(db, { query, city_name, limit }) {
   });
 }
 
+const CJK_TEXT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+// Travel words that are also real place names ("Spa" is a town in Belgium) or match nothing.
+const DESTINATION_PROBE_STOPWORDS = new Set([
+  "and", "the", "for", "with", "near", "best", "cheap", "luxury", "hotel", "hotels", "resort",
+  "resorts", "spa", "beach", "villa", "villas", "stay", "stays", "room", "rooms", "suite", "suites",
+  "honeymoon", "family", "kids", "quiet", "romantic", "perks", "benefits", "trip", "travel",
+  "vacation", "holiday", "weekend", "night", "nights",
+]);
+const MAX_DESTINATION_PROBES = 6;
+
+/**
+ * Candidate destination words inside a free-form request that matched nothing as a whole:
+ * "巴黎 蜜月 安静 有特权的酒店" -> 巴黎, 蜜月, …; "巴黎蜜月酒店" -> 巴黎蜜月, 巴黎蜜, 巴黎;
+ * "romantic stay new york" -> "romantic stay", "stay new", "new york", "romantic", "new", "york".
+ */
+export function buildDestinationProbeTerms(query) {
+  const text = String(query || "").trim();
+  const words = text.split(/[\s,，、;；。.!！?？/|·:：()（）]+/u).filter(Boolean);
+  const terms = [];
+
+  if (CJK_TEXT.test(text)) {
+    if (words.length > 1) {
+      terms.push(...words);
+    } else {
+      for (const size of [4, 3, 2]) {
+        if (text.length > size) terms.push(text.slice(0, size));
+      }
+    }
+  } else {
+    const usable = (word) => word.length >= 3 && !DESTINATION_PROBE_STOPWORDS.has(word.toLowerCase());
+    for (let index = 0; index < words.length - 1; index += 1) {
+      if (usable(words[index]) || usable(words[index + 1])) terms.push(`${words[index]} ${words[index + 1]}`);
+    }
+    terms.push(...words.filter(usable));
+  }
+
+  return [...new Set(terms)]
+    .filter((term) => term !== text && [...term].length >= 2)
+    .slice(0, MAX_DESTINATION_PROBES);
+}
+
+/** True when the city's own name (in any language) is the term, not just a fuzzy hit. */
+export function cityNameEquals(city, term) {
+  const wanted = String(term || "").trim().toLowerCase();
+  if (!wanted) return false;
+  const names = [city?.name, city?.nameEn, city?.city_name, city?.city_name_en, ...Object.values(city?.i18n?.name || {})];
+  return names.some((name) => typeof name === "string" && name.trim().toLowerCase() === wanted);
+}
+
+async function findDestinationInsideQuery(api, query) {
+  for (const term of buildDestinationProbeTerms(query)) {
+    const cities = asArray(await api.searchCitiesOnly(term).catch(() => [])).filter((city) => cityNameEquals(city, term));
+    if (cities.length > 0) {
+      return { term, cities };
+    }
+  }
+  return null;
+}
+
 export async function searchHotels(api, db, params) {
   const query = String(params.query || "").trim();
   const cityId = normalizeId(params.city_id);
@@ -4408,6 +4467,7 @@ export async function searchHotels(api, db, params) {
   let directHotelSection = null;
   let exposeCityInventorySection = false;
   let exposeDirectHotelSection = false;
+  let destinationProbeTerm = null;
   const liveWarnings = [];
 
   if (source === "city_id") {
@@ -4613,6 +4673,14 @@ export async function searchHotels(api, db, params) {
       query,
       Math.max(candidateLimit, offset + limit)
     );
+
+    if (cityCandidates.length === 0 && hotelSeedRows.length === 0) {
+      const probe = await findDestinationInsideQuery(api, query);
+      if (probe) {
+        destinationProbeTerm = probe.term;
+        cityCandidates = await buildCityCandidateRows(db, mergeCityCandidateSeeds(probe.cities), probe.term, candidateLimit);
+      }
+    }
 
     const routeDecision = resolveSearchRoute({
       source,
@@ -4904,6 +4972,12 @@ export async function searchHotels(api, db, params) {
   if (routeDecision.recommended_route === "ambiguous_review") {
     assumptions.push(
       "The query matched both destination and hotel signals; inspect query_resolution and both candidate sections before narrowing."
+    );
+  }
+
+  if (destinationProbeTerm) {
+    assumptions.push(
+      `Nothing matched the whole query, so the destination was read from "${destinationProbeTerm}" inside it. Apply the rest of the request (perks, mood, who is travelling) when choosing from the shortlist.`
     );
   }
 
