@@ -154,6 +154,10 @@ const TOOL_AUTHORIZATION_POLICIES = {
     required_scopes: [MCP_SCOPE.INVENTORY_READ, MCP_SCOPE.GROUNDING_READ],
     exposure: "public",
   },
+  get_hotel_prices: {
+    required_scopes: [MCP_SCOPE.INVENTORY_READ],
+    exposure: "public",
+  },
   get_hotel_media: {
     required_scopes: [MCP_SCOPE.INVENTORY_READ],
     exposure: "public",
