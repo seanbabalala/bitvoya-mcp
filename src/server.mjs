@@ -44,6 +44,7 @@ import {
   compareRates,
   getHotelDetail,
   getHotelGrounding,
+  getHotelPriceSignals,
   getHotelRooms,
   searchHotels,
   searchHotelsGrounding,
@@ -1613,6 +1614,22 @@ server.registerTool(
 
     return asTextResult(payload);
   }
+);
+
+server.registerTool(
+  "get_hotel_prices",
+  agenticReadTool({
+    description:
+      `Quick nightly price signal for hotels already on a shortlist (up to 20 ids from a search). Returns each hotel's lowest average nightly price in CNY before the Bitvoya service fee, or available=false. Much faster than get_hotel_rooms; use get_hotel_rooms for rooms and the payable total. ${relativeDateInstruction}`,
+    inputSchema: {
+      hotel_ids: z.array(z.string().min(1)).min(1).max(20).describe("Bitvoya hotel ids from a search result."),
+      checkin: z.string().min(1).describe("Stay start date in YYYY-MM-DD."),
+      checkout: z.string().min(1).describe("Stay end date in YYYY-MM-DD."),
+      adult_num: z.number().int().min(1).max(8).optional().describe("Number of adults."),
+    },
+  }),
+  async ({ hotel_ids, checkin, checkout, adult_num }) =>
+    asTextResult(await getHotelPriceSignals(api, { hotel_ids, checkin, checkout, adult_num: adult_num || 2 }))
 );
 
 server.registerTool(

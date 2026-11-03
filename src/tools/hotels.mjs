@@ -13,6 +13,10 @@ import {
 import { buildAgenticToolResult, buildNextTool } from "../agentic-output.mjs";
 
 const SEARCH_STAGE_PRICE_TIMEOUT_MS = 1600;
+// get_hotel_prices asks for a handful of chosen hotels, so it can wait for a cold price lookup
+// (about 4 s for five hotels) that the search-stage guard above gives up on.
+const PRICE_SIGNAL_TIMEOUT_MS = 12000;
+const MAX_PRICE_SIGNAL_HOTELS = 20;
 
 function toPlaceholders(count) {
   return new Array(count).fill("?").join(", ");
@@ -4191,6 +4195,81 @@ function parseDateOnlyToUtcMs(value) {
 
   const parsed = Date.parse(`${normalized}T00:00:00Z`);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Nightly price signals for hotels that are already on a shortlist. /hotels/prices returns the
+ * supplier's lowest average nightly price in CNY (before the Bitvoya service fee), which is what
+ * a card or a comparison needs; the payable total still comes from get_hotel_rooms.
+ */
+export async function getHotelPriceSignals(api, { hotel_ids, checkin, checkout, adult_num = 2 }) {
+  const hotelIds = [...new Set(asArray(hotel_ids).map((id) => String(id ?? "").trim()).filter(Boolean))].slice(
+    0,
+    MAX_PRICE_SIGNAL_HOTELS
+  );
+  const dateValidation = buildStayDateValidation(checkin, checkout);
+  const stay = { checkin, checkout, adult_num, nights: dateValidation.nights };
+  const warnings = [];
+  let rows = [];
+
+  if (dateValidation.status === "invalid_format" || dateValidation.status === "invalid_range") {
+    warnings.push("checkin and checkout must be YYYY-MM-DD with checkout after checkin.");
+  } else {
+    if (dateValidation.status === "past_stay") {
+      warnings.push(`The stay starts before the server date ${dateValidation.server_today}.`);
+    }
+    try {
+      rows = await api.getHotelPrices(
+        { hotelIds, checkin, checkout, adultNum: adult_num },
+        { timeoutMs: PRICE_SIGNAL_TIMEOUT_MS }
+      );
+    } catch (error) {
+      if (!isLikelyTransientLiveError(error)) {
+        throw error;
+      }
+      warnings.push("The live price lookup timed out; retry before treating these hotels as unavailable.");
+    }
+  }
+
+  const rowsById = new Map(asArray(rows).map((row) => [String(row?.id ?? ""), row]));
+  const prices = hotelIds.map((hotelId) => {
+    const row = rowsById.get(hotelId);
+    const perNight = asNullableNumber(row?.minPrice);
+    const available = perNight !== null && perNight > 0;
+    return {
+      hotel_id: hotelId,
+      available,
+      from_per_night_cny: available ? perNight : null,
+      supplier_currency: available ? row?.initPriceUnit || null : null,
+      supplier_from_per_night: available ? asNullableNumber(row?.initMinPrice) : null,
+    };
+  });
+  const priced = prices.filter((item) => item.available);
+  const timedOut = warnings.some((warning) => warning.includes("timed out"));
+
+  return buildAgenticToolResult({
+    tool: "get_hotel_prices",
+    status: priced.length === hotelIds.length ? "ok" : priced.length > 0 || timedOut ? "partial" : "not_found",
+    intent: "hotel_price_signals",
+    summary:
+      priced.length > 0
+        ? `Found nightly prices for ${priced.length} of ${hotelIds.length} hotel(s) for ${checkin} to ${checkout}.`
+        : `No nightly prices came back for ${hotelIds.length} hotel(s) for ${checkin} to ${checkout}.`,
+    recommended_next_tools: [
+      buildNextTool("get_hotel_rooms", "Open live rooms and the payable total for the hotel the traveler prefers.", [
+        "hotel_id",
+        "checkin",
+        "checkout",
+      ]),
+    ],
+    warnings,
+    pricing_notes: [
+      "from_per_night_cny is the supplier's lowest average nightly price in CNY before the Bitvoya service fee.",
+      "Quote display_total_cny from get_hotel_rooms as the amount the traveler pays.",
+    ],
+    entity_refs: { hotel_ids: hotelIds },
+    data: { stay, date_validation: dateValidation, prices },
+  });
 }
 
 function buildStayDateValidation(checkin, checkout) {
