@@ -31,6 +31,9 @@ function compactObject(value) {
   return next;
 }
 
+// Every tool shares this envelope, so tools/list repeats it once per tool. It names the stable
+// top-level fields; decision_support (recommended_next_tools, warnings, pricing_notes,
+// selection_hints, assumptions) and entity_refs (*_ids arrays) stay open objects.
 export const agenticToolOutputSchema = z
   .object({
     object: z.literal("tool_result"),
@@ -38,33 +41,8 @@ export const agenticToolOutputSchema = z
     status: z.enum(["ok", "not_found", "partial"]),
     intent: z.string().min(1),
     summary: z.string().min(1),
-    decision_support: z
-      .object({
-        recommended_next_tools: z
-          .array(
-            z.object({
-              tool: z.string().min(1),
-              reason: z.string().min(1),
-              required_inputs: z.array(z.string().min(1)).optional(),
-            })
-          )
-          .optional(),
-        warnings: z.array(z.string().min(1)).optional(),
-        pricing_notes: z.array(z.string().min(1)).optional(),
-        selection_hints: z.array(z.string().min(1)).optional(),
-        assumptions: z.array(z.string().min(1)).optional(),
-      })
-      .optional(),
-    entity_refs: z
-      .object({
-        city_ids: z.array(z.string().min(1)).optional(),
-        hotel_ids: z.array(z.string().min(1)).optional(),
-        room_ids: z.array(z.string().min(1)).optional(),
-        rate_ids: z.array(z.string().min(1)).optional(),
-        tripwiki_city_ids: z.array(z.string().min(1)).optional(),
-        tripwiki_hotel_ids: z.array(z.string().min(1)).optional(),
-      })
-      .optional(),
+    decision_support: z.object({}).loose().optional(),
+    entity_refs: z.object({}).loose().optional(),
     data: z.object({}).loose(),
   })
   .loose();
@@ -125,9 +103,11 @@ export function buildAgenticToolResult({
   });
 }
 
+// The text block carries the readable summary followed by the payload as compact JSON, the form
+// MCP asks for when a result also has structuredContent. Indentation only cost tokens.
 export function buildToolTextResult(payload) {
   if (!payload || typeof payload !== "object") {
-    const text = JSON.stringify(payload, null, 2);
+    const text = JSON.stringify(payload);
     return {
       content: [{ type: "text", text }],
       structuredContent: payload,
@@ -187,7 +167,7 @@ export function buildToolTextResult(payload) {
     content: [
       {
         type: "text",
-        text: `${prefix}${JSON.stringify(payload, null, 2)}`,
+        text: `${prefix}${JSON.stringify(payload)}`,
       },
     ],
     structuredContent: payload,
