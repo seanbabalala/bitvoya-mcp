@@ -62,6 +62,24 @@ function unwrapEnvelope(response, endpoint) {
   return response.data;
 }
 
+// The API takes at most this many hotels in one price request from the MCP.
+const PRICE_BATCH_SIZE = 10;
+
+/** The API held a live lookup back (busy, paused or over budget): the rates are unknown, not sold out. */
+function createHeldBackError(payload, endpoint, response) {
+  const wait = Number(payload?.retry_after_seconds);
+  const retryAfterSeconds = Number.isFinite(wait) && wait > 0 ? wait : null;
+  const error = createBitvoyaApiError(
+    `Live rates were not checked: the Bitvoya API is holding back live lookups right now` +
+      ` (${payload?.reason || "busy"}). Retry ${retryAfterSeconds ? `in about ${retryAfterSeconds}s` : "shortly"};` +
+      " this does not mean the hotel is sold out.",
+    { endpoint, response }
+  );
+  error.heldBack = true;
+  error.retryAfterSeconds = retryAfterSeconds;
+  return error;
+}
+
 function dedupeHotels(items) {
   return uniqueBy(items, (item) => item?.id || null);
 }
@@ -126,30 +144,42 @@ export function createBitvoyaApi(config) {
       return asArray(payload);
     },
 
+    /**
+     * `rows` holds the hotels with something to sell for the stay. `deferredHotelIds` are hotels the
+     * API did not ask the supplier about this time: their price is unknown, not absent.
+     */
     async getHotelPrices({ hotelIds, checkin, checkout, adultNum }, options = {}) {
       const ids = asArray(hotelIds)
         .map((value) => String(value).trim())
         .filter(Boolean);
-
-      if (ids.length === 0) {
-        return [];
+      const batches = [];
+      for (let index = 0; index < ids.length; index += PRICE_BATCH_SIZE) {
+        batches.push(ids.slice(index, index + PRICE_BATCH_SIZE));
       }
 
-      const payload = unwrapEnvelope(
-        await http.request("/hotels/prices", {
-          method: "POST",
-          timeoutMs: options.timeoutMs,
-          body: {
-            hotel_ids: ids.join(","),
-            checkin,
-            checkout,
-            adult_num: adultNum,
-          },
-        }),
-        "/hotels/prices"
+      const answers = await Promise.all(
+        batches.map(async (batch) => {
+          const response = await http.request("/hotels/prices", {
+            method: "POST",
+            timeoutMs: options.timeoutMs,
+            body: {
+              hotel_ids: batch.join(","),
+              checkin,
+              checkout,
+              adult_num: adultNum,
+            },
+          });
+          return {
+            rows: asArray(unwrapEnvelope(response, "/hotels/prices")),
+            deferredHotelIds: asArray(response?.data?.deferred_hotel_ids).map(String),
+          };
+        })
       );
 
-      return asArray(payload);
+      return {
+        rows: answers.flatMap((answer) => answer.rows),
+        deferredHotelIds: answers.flatMap((answer) => answer.deferredHotelIds),
+      };
     },
 
     async getHotelDetail(hotelId, profiles = "CITY,BRAND,GROUP,INTEREST,PROMOTION") {
@@ -173,21 +203,23 @@ export function createBitvoyaApi(config) {
       childNum = 0,
       roomNum = 1,
     }, options = {}) {
-      const payload = unwrapEnvelope(
-        await http.request("/hotels/rooms", {
-          method: "POST",
-          headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
-          body: {
-            hotel_id: String(hotelId),
-            checkin,
-            checkout,
-            adult_num: adultNum,
-            child_num: childNum,
-            room_num: roomNum,
-          },
-        }),
-        "/hotels/rooms"
-      );
+      const response = await http.request("/hotels/rooms", {
+        method: "POST",
+        headers: buildRequestPrincipalHeaders(config, options.requestPrincipal),
+        body: {
+          hotel_id: String(hotelId),
+          checkin,
+          checkout,
+          adult_num: adultNum,
+          child_num: childNum,
+          room_num: roomNum,
+        },
+      });
+      const payload = unwrapEnvelope(response, "/hotels/rooms");
+
+      if (payload?.availability === "unknown") {
+        throw createHeldBackError(payload, "/hotels/rooms", response);
+      }
 
       return asArray(payload);
     },

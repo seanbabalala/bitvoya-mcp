@@ -39,6 +39,11 @@ export function createHttpClient(config) {
         headers.authorization = `Bearer ${config.authToken}`;
       }
 
+      // The API meters the MCP's live-rate lookups under this key instead of as an anonymous visitor's.
+      if (config.rateKey && !headers["x-bitvoya-rate-key"]) {
+        headers["x-bitvoya-rate-key"] = config.rateKey;
+      }
+
       let response;
 
       try {

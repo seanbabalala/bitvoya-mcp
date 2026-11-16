@@ -124,6 +124,7 @@ export function loadConfig() {
       baseUrl: envValue(fileEnv, "BITVOYA_API_BASE_URL", "https://app.bitvoya.com/api"),
       timeoutMs: intValue(fileEnv, "BITVOYA_API_TIMEOUT_MS", 30000),
       authToken: envValue(fileEnv, "BITVOYA_API_BEARER_TOKEN", ""),
+      rateKey: envValue(fileEnv, "BITVOYA_API_RATE_KEY", ""),
       acceptLanguage: envValue(fileEnv, "BITVOYA_API_ACCEPT_LANGUAGE", "en"),
       userAgent: envValue(fileEnv, "BITVOYA_API_USER_AGENT", "bitvoya-mcp/0.3.3"),
     },

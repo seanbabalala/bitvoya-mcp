@@ -11,7 +11,8 @@ function fakeApi(handler) {
     calls,
     async getHotelPrices(params, options) {
       calls.push({ params, options });
-      return handler(params);
+      const answer = handler(params);
+      return Array.isArray(answer) ? { rows: answer, deferredHotelIds: [] } : answer;
     },
   };
 }
@@ -53,11 +54,25 @@ test("a timeout is a partial result with a retry warning, other errors propagate
   const result = await getHotelPriceSignals(slow, { hotel_ids: ["1"], ...FUTURE });
   assert.equal(result.status, "partial");
   assert.match(result.decision_support.warnings[0], /timed out/);
+  assert.equal(result.data.prices[0].available, null);
 
   const broken = fakeApi(() => {
     throw new Error("HTTP 500 from /hotels/prices");
   });
   await assert.rejects(getHotelPriceSignals(broken, { hotel_ids: ["1"], ...FUTURE }), /HTTP 500/);
+});
+
+test("hotels the API did not check are unknown, not unavailable", async () => {
+  const api = fakeApi(() => ({ rows: [{ id: "1", minPrice: 900 }], deferredHotelIds: ["2"] }));
+  const result = await getHotelPriceSignals(api, { hotel_ids: ["1", "2", "3"], ...FUTURE });
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.data.prices.map((item) => item.available), [true, null, false]);
+  assert.match(result.decision_support.warnings[0], /not checked for 1 hotel/);
+
+  const allHeld = fakeApi(() => ({ rows: [], deferredHotelIds: ["1", "2"] }));
+  const held = await getHotelPriceSignals(allHeld, { hotel_ids: ["1", "2"], ...FUTURE });
+  assert.equal(held.status, "partial");
+  assert.deepEqual(held.data.prices.map((item) => item.available), [null, null]);
 });
 
 test("invalid dates skip the lookup", async () => {

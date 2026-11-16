@@ -3262,7 +3262,7 @@ async function loadPriceMap(api, hotelIds, stayContext) {
 
   let priceRows = [];
   try {
-    priceRows = await api.getHotelPrices({
+    const answer = await api.getHotelPrices({
       hotelIds,
       checkin: stayContext.checkin,
       checkout: stayContext.checkout,
@@ -3273,6 +3273,7 @@ async function loadPriceMap(api, hotelIds, stayContext) {
       // chat tool budget.
       timeoutMs: SEARCH_STAGE_PRICE_TIMEOUT_MS,
     });
+    priceRows = answer.rows;
   } catch (error) {
     if (!isLikelyTransientLiveError(error)) {
       throw error;
@@ -4210,7 +4211,8 @@ export async function getHotelPriceSignals(api, { hotel_ids, checkin, checkout, 
   const dateValidation = buildStayDateValidation(checkin, checkout);
   const stay = { checkin, checkout, adult_num, nights: dateValidation.nights };
   const warnings = [];
-  let rows = [];
+  let answer = { rows: [], deferredHotelIds: [] };
+  let timedOut = false;
 
   if (dateValidation.status === "invalid_format" || dateValidation.status === "invalid_range") {
     warnings.push("checkin and checkout must be YYYY-MM-DD with checkout after checkin.");
@@ -4219,7 +4221,7 @@ export async function getHotelPriceSignals(api, { hotel_ids, checkin, checkout, 
       warnings.push(`The stay starts before the server date ${dateValidation.server_today}.`);
     }
     try {
-      rows = await api.getHotelPrices(
+      answer = await api.getHotelPrices(
         { hotelIds, checkin, checkout, adultNum: adult_num },
         { timeoutMs: PRICE_SIGNAL_TIMEOUT_MS }
       );
@@ -4227,29 +4229,37 @@ export async function getHotelPriceSignals(api, { hotel_ids, checkin, checkout, 
       if (!isLikelyTransientLiveError(error)) {
         throw error;
       }
+      timedOut = true;
       warnings.push("The live price lookup timed out; retry before treating these hotels as unavailable.");
     }
   }
 
-  const rowsById = new Map(asArray(rows).map((row) => [String(row?.id ?? ""), row]));
+  const rowsById = new Map(asArray(answer.rows).map((row) => [String(row?.id ?? ""), row]));
+  const notChecked = new Set(asArray(answer.deferredHotelIds).map(String));
   const prices = hotelIds.map((hotelId) => {
     const row = rowsById.get(hotelId);
     const perNight = asNullableNumber(row?.minPrice);
-    const available = perNight !== null && perNight > 0;
+    const priced = perNight !== null && perNight > 0;
     return {
       hotel_id: hotelId,
-      available,
-      from_per_night_cny: available ? perNight : null,
-      supplier_currency: available ? row?.initPriceUnit || null : null,
-      supplier_from_per_night: available ? asNullableNumber(row?.initMinPrice) : null,
+      // null: nothing is known about this hotel's price this time, which is not "sold out".
+      available: priced ? true : timedOut || notChecked.has(hotelId) ? null : false,
+      from_per_night_cny: priced ? perNight : null,
+      supplier_currency: priced ? row?.initPriceUnit || null : null,
+      supplier_from_per_night: priced ? asNullableNumber(row?.initMinPrice) : null,
     };
   });
-  const priced = prices.filter((item) => item.available);
-  const timedOut = warnings.some((warning) => warning.includes("timed out"));
+  const priced = prices.filter((item) => item.available === true);
+  const unchecked = prices.filter((item) => item.available === null).length;
+  if (unchecked > 0 && !timedOut) {
+    warnings.push(
+      `Live prices were not checked for ${unchecked} hotel(s) (available=null): the Bitvoya API is holding back live lookups right now. This is not sold out; retry shortly or open get_hotel_rooms for the hotel the traveler prefers.`
+    );
+  }
 
   return buildAgenticToolResult({
     tool: "get_hotel_prices",
-    status: priced.length === hotelIds.length ? "ok" : priced.length > 0 || timedOut ? "partial" : "not_found",
+    status: priced.length === hotelIds.length ? "ok" : priced.length > 0 || unchecked > 0 ? "partial" : "not_found",
     intent: "hotel_price_signals",
     summary:
       priced.length > 0
