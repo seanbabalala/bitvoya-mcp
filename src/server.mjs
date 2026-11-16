@@ -1620,7 +1620,7 @@ server.registerTool(
   "get_hotel_prices",
   agenticReadTool({
     description:
-      `Quick nightly price signal for hotels already on a shortlist (up to 20 ids from a search). Returns each hotel's lowest average nightly price in CNY before the Bitvoya service fee, or available=false. Much faster than get_hotel_rooms; use get_hotel_rooms for rooms and the payable total. ${relativeDateInstruction}`,
+      `Quick nightly price signal for hotels already on a shortlist (up to 20 ids from a search). Returns each hotel's lowest average nightly price in CNY before the Bitvoya service fee; available=false means nothing to sell for the stay, available=null means the price was not checked this time (retry shortly). Much faster than get_hotel_rooms; use get_hotel_rooms for rooms and the payable total. ${relativeDateInstruction}`,
     inputSchema: {
       hotel_ids: z.array(z.string().min(1)).min(1).max(20).describe("Bitvoya hotel ids from a search result."),
       checkin: z.string().min(1).describe("Stay start date in YYYY-MM-DD."),
