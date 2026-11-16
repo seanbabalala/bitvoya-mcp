@@ -55,6 +55,14 @@ Operational assumptions:
 - Official MCP Registry publishing uses the local DNS key file at `/root/.config/mcp-registry/bitvoya.com/key.pem` unless overridden with `BITVOYA_MCP_REGISTRY_KEY_FILE`
 - `server.json` versioning remains immutable at the registry level, so metadata changes still require a new unique `version`
 
+## Live-Rate Key
+
+The Bitvoya API meters live-rate lookups (rooms and prices) per caller and holds back anonymous ones until a browser check passes. Give the MCP the same secret the API has in `RATE_QUERY_MCP_KEY`, so its lookups are metered as MCP traffic:
+
+```bash
+BITVOYA_API_RATE_KEY=<the API's RATE_QUERY_MCP_KEY>
+```
+
 ## Remote HTTP Hardening
 
 For public Streamable HTTP deployments, configure the public MCP origin and explicit host/origin allowlists so GET, POST, and browser preflight requests pass while DNS rebinding protection stays enabled.
